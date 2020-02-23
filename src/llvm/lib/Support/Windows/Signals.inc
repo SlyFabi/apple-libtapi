@@ -1,15 +1,15 @@
 //===- Win32/Signals.cpp - Win32 Signals Implementation ---------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
 // This file provides the Win32 specific implementation of the Signals class.
 //
 //===----------------------------------------------------------------------===//
+#include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
@@ -533,10 +533,14 @@ void llvm::sys::PrintStackTrace(raw_ostream &OS) {
   StackFrame.AddrPC.Offset = Context.Eip;
   StackFrame.AddrStack.Offset = Context.Esp;
   StackFrame.AddrFrame.Offset = Context.Ebp;
-#elif defined(_M_ARM64) || defined(_M_ARM)
+#elif defined(_M_ARM64)
   StackFrame.AddrPC.Offset = Context.Pc;
   StackFrame.AddrStack.Offset = Context.Sp;
   StackFrame.AddrFrame.Offset = Context.Fp;
+#elif defined(_M_ARM)
+  StackFrame.AddrPC.Offset = Context.Pc;
+  StackFrame.AddrStack.Offset = Context.Sp;
+  StackFrame.AddrFrame.Offset = Context.R11;
 #endif
   StackFrame.AddrPC.Mode = AddrModeFlat;
   StackFrame.AddrStack.Mode = AddrModeFlat;
@@ -552,6 +556,17 @@ void llvm::sys::SetInterruptFunction(void (*IF)()) {
   LeaveCriticalSection(&CriticalSection);
 }
 
+void llvm::sys::SetInfoSignalFunction(void (*Handler)()) {
+  // Unimplemented.
+}
+
+void llvm::sys::SetOneShotPipeSignalFunction(void (*Handler)()) {
+  // Unimplemented.
+}
+
+void llvm::sys::DefaultOneShotPipeSignalHandler() {
+  // Unimplemented.
+}
 
 /// Add a function to be called when a signal is delivered to the process. The
 /// handler can have a cookie passed to it to identify what instance of the
@@ -817,7 +832,11 @@ static LONG WINAPI LLVMUnhandledExceptionFilter(LPEXCEPTION_POINTERS ep) {
   StackFrame.AddrPC.Mode = AddrModeFlat;
   StackFrame.AddrStack.Offset = ep->ContextRecord->Sp;
   StackFrame.AddrStack.Mode = AddrModeFlat;
+#if defined(_M_ARM64)
   StackFrame.AddrFrame.Offset = ep->ContextRecord->Fp;
+#else
+  StackFrame.AddrFrame.Offset = ep->ContextRecord->R11;
+#endif
   StackFrame.AddrFrame.Mode = AddrModeFlat;
 #endif
 

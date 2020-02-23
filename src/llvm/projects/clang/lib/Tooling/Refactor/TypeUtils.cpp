@@ -50,7 +50,7 @@ static QualType preferredBoolType(const Decl *FunctionLikeParentDecl,
   case BuiltinType::Bool:
     // In Objective-C[++] we want to try to use 'BOOL' when the 'BOOL' typedef
     // is defined.
-    if (Ctx.getLangOpts().ObjC1 && Ctx.getBOOLDecl()) {
+    if (Ctx.getLangOpts().ObjC && Ctx.getBOOLDecl()) {
       if (Ctx.getLangOpts().CPlusPlus && FunctionLikeParentDecl) {
         // When extracting expression from a standalone function in
         // Objective-C++ we should use BOOL when expression uses BOOL, otherwise
@@ -133,7 +133,7 @@ static QualType canonicalizeStdOperatorReturnType(const Expr *E, QualType T) {
   } else
     return T;
   for (unsigned I = 0, E = OCE->getNumArgs(); I < E; ++I) {
-    const Expr *Arg = OCE->getArgs()[I];
+    const Expr *Arg = OCE->getArgs()[I]->IgnoreImpCasts();
     QualType T = Arg->getType();
     if (const auto *ET = dyn_cast<ElaboratedType>(T))
       T = ET->desugar();
@@ -183,7 +183,7 @@ QualType findExpressionLexicalType(const Decl *FunctionLikeParentDecl,
   }
 
   // The bool type adjustment is required only in C or Objective-C[++].
-  if (Ctx.getLangOpts().CPlusPlus && !Ctx.getLangOpts().ObjC1)
+  if (Ctx.getLangOpts().CPlusPlus && !Ctx.getLangOpts().ObjC)
     return T;
   E = E->IgnoreParenImpCasts();
   if (const auto *BinOp = dyn_cast<BinaryOperator>(E)) {

@@ -246,14 +246,14 @@ public:
     // Find the appropriate source locations by looking
     if (MethodsFromProtocolInContainer.empty())
       return SourceLocation();
-    SourceLocation Loc = MethodsFromProtocolInContainer[0]->getLocEnd();
+    SourceLocation Loc = MethodsFromProtocolInContainer[0]->getEndLoc();
     if (Loc.isMacroID())
-      Loc = SM.getExpansionRange(Loc).second;
+      Loc = SM.getExpansionRange(Loc).getEnd();
     for (const ObjCMethodDecl *M :
          makeArrayRef(MethodsFromProtocolInContainer).drop_front()) {
-      SourceLocation EndLoc = M->getLocEnd();
+      SourceLocation EndLoc = M->getEndLoc();
       if (EndLoc.isMacroID())
-        EndLoc = SM.getExpansionRange(EndLoc).second;
+        EndLoc = SM.getExpansionRange(EndLoc).getEnd();
       if (SM.isBeforeInTranslationUnit(Loc, EndLoc))
         Loc = EndLoc;
     }
@@ -363,7 +363,7 @@ operator=(FillInMissingProtocolStubs &&Other) {
 
 bool FillInMissingProtocolStubs::initiate(ASTContext &Context,
                                           const ObjCContainerDecl *Container) {
-  Impl = llvm::make_unique<FillInMissingProtocolStubsImpl>();
+  Impl = std::make_unique<FillInMissingProtocolStubsImpl>();
   if (!::initiate(*Impl, Context, Container))
     return true;
   return false;
@@ -390,12 +390,12 @@ static void perform(MethodSet &Methods, const ObjCContainerDecl *Container,
 
   SourceLocation InsertionLoc =
       isa<ObjCImplDecl>(Container)
-          ? Container->getLocEnd()
-          : getLocationOfPrecedingToken(Container->getLocEnd(),
+          ? Container->getEndLoc()
+          : getLocationOfPrecedingToken(Container->getEndLoc(),
                                         Context.getSourceManager(),
                                         Context.getLangOpts());
   if (InsertionLoc.isInvalid())
-    InsertionLoc = Container->getLocEnd();
+    InsertionLoc = Container->getEndLoc();
 
   PrintingPolicy PP = Context.getPrintingPolicy();
   PP.PolishForDeclaration = true;

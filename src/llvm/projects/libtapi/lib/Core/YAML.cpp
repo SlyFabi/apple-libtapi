@@ -195,15 +195,15 @@ QuotingType ScalarTraits<UUID>::mustQuote(StringRef) {
 }
 
 using clang::InputKind;
-void ScalarEnumerationTraits<InputKind::Language>::enumeration(
-    IO &io, InputKind::Language &kind) {
-  io.enumCase(kind, "c", InputKind::C);
-  io.enumCase(kind, "cxx", InputKind::CXX);
-  io.enumCase(kind, "objective-c", InputKind::ObjC);
-  io.enumCase(kind, "objc", InputKind::ObjC); // to keep old snapshots working.
-  io.enumCase(kind, "objective-cxx", InputKind::ObjCXX);
+void ScalarEnumerationTraits<clang::Language>::enumeration(
+    IO &io, clang::Language &kind) {
+  io.enumCase(kind, "c", clang::Language::C);
+  io.enumCase(kind, "cxx", clang::Language::CXX);
+  io.enumCase(kind, "objective-c", clang::Language::ObjC);
+  io.enumCase(kind, "objc", clang::Language::ObjC); // to keep old snapshots working.
+  io.enumCase(kind, "objective-cxx", clang::Language::ObjCXX);
   io.enumCase(kind, "objcxx",
-              InputKind::ObjCXX); // to keep old snapshots working.
+              clang::Language::ObjCXX); // to keep old snapshots working.
 }
 
 } // end namespace yaml.

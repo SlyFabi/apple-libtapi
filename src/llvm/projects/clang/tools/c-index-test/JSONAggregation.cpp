@@ -13,6 +13,7 @@
 #include "clang/Index/IndexDataStoreSymbolUtils.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Allocator.h"
+#include "llvm/Support/BuryPointer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -20,8 +21,6 @@ using namespace clang;
 using namespace clang::index;
 using namespace indexstore;
 using namespace llvm;
-
-#if INDEXSTORE_HAS_BLOCKS
 
 namespace {
 
@@ -139,7 +138,7 @@ bool Aggregator::process() {
 
 void Aggregator::processUnit(StringRef name, IndexUnitReader &UnitReader) {
   auto workDir = UnitReader.getWorkingDirectory();
-  auto unit = llvm::make_unique<UnitInfo>();
+  auto unit = std::make_unique<UnitInfo>();
   unit->Name = name;
   unit->Triple = getTripleString(UnitReader.getTarget());
   unit->OutFile = getFilePathIndex(UnitReader.getOutputFile(), workDir);
@@ -219,21 +218,21 @@ std::unique_ptr<RecordInfo> Aggregator::processRecord(StringRef recordFile) {
     errs() << "failed reading record file: " << recordFile << '\n';
     ::exit(1);
   }
-  auto record = llvm::make_unique<RecordInfo>();
+  auto record = std::make_unique<RecordInfo>();
   recordReader.foreachOccurrence([&](IndexRecordOccurrence idxOccur) -> bool {
     SymbolIndex symIdx = getSymbolIndex(idxOccur.getSymbol());
     SymbolInfo &symInfo = Symbols[symIdx];
-    symInfo.Roles |= idxOccur.getRoles();
+    symInfo.Roles |= getSymbolRoles(idxOccur.getRoles());
     SymbolOccurrenceInfo occurInfo;
     occurInfo.Symbol = symIdx;
     idxOccur.foreachRelation([&](IndexSymbolRelation rel) -> bool {
       SymbolIndex relsymIdx = getSymbolIndex(rel.getSymbol());
       SymbolInfo &relsymInfo = Symbols[relsymIdx];
-      relsymInfo.RelatedRoles |= rel.getRoles();
-      occurInfo.Relations.emplace_back(relsymIdx, rel.getRoles());
+      relsymInfo.RelatedRoles |= getSymbolRoles(rel.getRoles());
+      occurInfo.Relations.emplace_back(relsymIdx, getSymbolRoles(rel.getRoles()));
       return true;
     });
-    occurInfo.Roles = idxOccur.getRoles();
+    occurInfo.Roles = getSymbolRoles(idxOccur.getRoles());
     std::tie(occurInfo.Line, occurInfo.Column) = idxOccur.getLineCol();
     record->Occurrences.push_back(std::move(occurInfo));
     return true;
@@ -399,13 +398,6 @@ bool index::aggregateDataAsJSON(StringRef StorePath, raw_ostream &OS) {
   if (err)
     return true;
   aggregator->dumpJSON(OS);
-  BuryPointer(aggregator);
+  llvm::BuryPointer(aggregator);
   return false;
 }
-
-#else
-
-bool index::aggregateDataAsJSON(StringRef StorePath, raw_ostream &OS) {
-  return true;
-}
-#endif

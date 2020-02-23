@@ -227,7 +227,7 @@ clang::tooling::initiateExtractRepeatedExpressionIntoVariableOperation(
   if (!CreateOperation)
     return Result;
   auto Operation =
-      llvm::make_unique<ExtractRepeatedExpressionIntoVariableOperation>(
+      std::make_unique<ExtractRepeatedExpressionIntoVariableOperation>(
           E, DupFinder.DuplicateExpressions, ParentDecl);
   Result.RefactoringOp = std::move(Operation);
   return Result;
@@ -257,7 +257,7 @@ ExtractRepeatedExpressionIntoVariableOperation::perform(
 
   StringRef Name = nameForExtractedVariable(E);
   Result.AssociatedSymbols.push_back(
-      llvm::make_unique<RefactoringResultAssociatedSymbol>(
+      std::make_unique<RefactoringResultAssociatedSymbol>(
           OldSymbolName(Name)));
   RefactoringResultAssociatedSymbol *CreatedSymbol =
       Result.AssociatedSymbols.back().get();
@@ -288,8 +288,8 @@ ExtractRepeatedExpressionIntoVariableOperation::perform(
   // Replace the duplicates with a reference to the variable.
   for (const Expr *E : DuplicateExpressions) {
     Replacements.push_back(RefactoringReplacement(
-        SourceRange(SM.getSpellingLoc(E->getLocStart()),
-                    getPreciseTokenLocEnd(SM.getSpellingLoc(E->getLocEnd()), SM,
+        SourceRange(SM.getSpellingLoc(E->getBeginLoc()),
+                    getPreciseTokenLocEnd(SM.getSpellingLoc(E->getEndLoc()), SM,
                                           Context.getLangOpts())),
         Name, CreatedSymbol,
         /*NameOffset=*/llvm::makeArrayRef(unsigned(0))));

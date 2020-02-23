@@ -1,9 +1,8 @@
 //===--- LogDiagnosticPrinter.h - Log Diagnostic Client ---------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,28 +19,70 @@ class DiagnosticOptions;
 class LangOptions;
 
 class LogDiagnosticPrinter : public DiagnosticConsumer {
+  struct DiagEntryLocation {
+    /// The source file name, if available and if different from DiagEntry's
+    /// Filename.
+    std::string Filename;
+
+    /// The source file line number, if available.
+    unsigned Line;
+
+    /// The source file column number, if available.
+    unsigned Column;
+
+    /// The source file offset, if available.
+    unsigned Offset;
+  };
+
+  struct DiagEntryRange {
+    /// The range start.
+    LogDiagnosticPrinter::DiagEntryLocation Start;
+
+    /// The range end.
+    LogDiagnosticPrinter::DiagEntryLocation End;
+  };
+
+  struct DiagEntryFixIt {
+    /// The range of existing source file to act upon.
+    LogDiagnosticPrinter::DiagEntryRange RemoveRange;
+
+    /// The code to insert at the start of the range,
+    ///   after removal of the range; may be empty for pure removal.
+    std::string CodeToInsert;
+  };
+
   struct DiagEntry {
     /// The primary message line of the diagnostic.
     std::string Message;
-  
+
     /// The source file name, if available.
     std::string Filename;
-  
+
     /// The source file line number, if available.
     unsigned Line;
-  
+
     /// The source file column number, if available.
     unsigned Column;
-  
+
     /// The ID of the diagnostic.
     unsigned DiagnosticID;
 
     /// The Option Flag for the diagnostic
     std::string WarningOption;
-  
+
     /// The level of the diagnostic.
     DiagnosticsEngine::Level DiagnosticLevel;
+
+    /// The source ranges of the diagnostic.
+    SmallVector<LogDiagnosticPrinter::DiagEntryRange, 2> SourceRanges;
+
+    /// The fix-its for the diagnostic.
+    SmallVector<LogDiagnosticPrinter::DiagEntryFixIt, 2> FixIts;
   };
+
+  void
+  EmitDiagEntryLocation(llvm::raw_ostream &OS, StringRef Indent,
+                        const LogDiagnosticPrinter::DiagEntryLocation &Del);
 
   void EmitDiagEntry(llvm::raw_ostream &OS,
                      const LogDiagnosticPrinter::DiagEntry &DE);

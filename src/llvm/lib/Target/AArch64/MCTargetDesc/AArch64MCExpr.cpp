@@ -1,9 +1,8 @@
 //===-- AArch64MCExpr.cpp - AArch64 specific MC expression classes --------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -13,11 +12,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "AArch64MCExpr.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbolELF.h"
 #include "llvm/MC/MCValue.h"
-#include "llvm/Object/ELF.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace llvm;
@@ -43,6 +42,13 @@ StringRef AArch64MCExpr::getVariantKindName() const {
   case VK_ABS_G0:              return ":abs_g0:";
   case VK_ABS_G0_S:            return ":abs_g0_s:";
   case VK_ABS_G0_NC:           return ":abs_g0_nc:";
+  case VK_PREL_G3:             return ":prel_g3:";
+  case VK_PREL_G2:             return ":prel_g2:";
+  case VK_PREL_G2_NC:          return ":prel_g2_nc:";
+  case VK_PREL_G1:             return ":prel_g1:";
+  case VK_PREL_G1_NC:          return ":prel_g1_nc:";
+  case VK_PREL_G0:             return ":prel_g0:";
+  case VK_PREL_G0_NC:          return ":prel_g0_nc:";
   case VK_DTPREL_G2:           return ":dtprel_g2:";
   case VK_DTPREL_G1:           return ":dtprel_g1:";
   case VK_DTPREL_G1_NC:        return ":dtprel_g1_nc:";
@@ -62,22 +68,25 @@ StringRef AArch64MCExpr::getVariantKindName() const {
   case VK_TLSDESC_LO12:        return ":tlsdesc_lo12:";
   case VK_ABS_PAGE:            return "";
   case VK_ABS_PAGE_NC:         return ":pg_hi21_nc:";
+  case VK_GOT:                 return ":got:";
   case VK_GOT_PAGE:            return ":got:";
   case VK_GOT_LO12:            return ":got_lo12:";
+  case VK_GOTTPREL:            return ":gottprel:";
   case VK_GOTTPREL_PAGE:       return ":gottprel:";
   case VK_GOTTPREL_LO12_NC:    return ":gottprel_lo12:";
   case VK_GOTTPREL_G1:         return ":gottprel_g1:";
   case VK_GOTTPREL_G0_NC:      return ":gottprel_g0_nc:";
   case VK_TLSDESC:             return "";
   case VK_TLSDESC_PAGE:        return ":tlsdesc:";
+  case VK_SECREL_LO12:         return ":secrel_lo12:";
+  case VK_SECREL_HI12:         return ":secrel_hi12:";
   default:
     llvm_unreachable("Invalid ELF symbol kind");
   }
 }
 
 void AArch64MCExpr::printImpl(raw_ostream &OS, const MCAsmInfo *MAI) const {
-  if (getKind() != VK_NONE)
-    OS << getVariantKindName();
+  OS << getVariantKindName();
   Expr->print(OS, MAI);
 }
 
@@ -142,4 +151,55 @@ void AArch64MCExpr::fixELFSymbolsInTLSFixups(MCAssembler &Asm) const {
   }
 
   fixELFSymbolsInTLSFixupsImpl(getSubExpr(), Asm);
+}
+
+//===----------------------------------------------------------------------===//
+
+const AArch64AuthMCExpr *AArch64AuthMCExpr::create(const MCExpr *Expr,
+                                                   uint16_t Discriminator,
+                                                   AArch64PACKey::ID Key,
+                                                   bool HasAddressDiversity,
+                                                   MCContext &Ctx) {
+  return new (Ctx)
+      AArch64AuthMCExpr(Expr, Discriminator, Key, HasAddressDiversity);
+}
+
+void AArch64AuthMCExpr::printImpl(raw_ostream &OS, const MCAsmInfo *MAI) const {
+  bool WrapSubExprInParens = !isa<MCSymbolRefExpr>(getSubExpr());
+  if (WrapSubExprInParens)
+    OS << '(';
+  getSubExpr()->print(OS, MAI);
+  if (WrapSubExprInParens)
+    OS << ')';
+
+  OS << "@AUTH(" << AArch64PACKeyIDToString(Key) << ',' << Discriminator;
+  if (hasAddressDiversity())
+    OS << ",addr";
+  OS << ')';
+}
+
+void AArch64AuthMCExpr::visitUsedExpr(MCStreamer &Streamer) const {
+  Streamer.visitUsedExpr(*getSubExpr());
+}
+
+MCFragment *AArch64AuthMCExpr::findAssociatedFragment() const {
+  llvm_unreachable("FIXME: what goes here?");
+}
+
+bool AArch64AuthMCExpr::evaluateAsRelocatableImpl(MCValue &Res,
+                                                  const MCAsmLayout *Layout,
+                                                  const MCFixup *Fixup) const {
+  if (!getSubExpr()->evaluateAsRelocatable(Res, Layout, Fixup))
+    return false;
+
+  if (Res.getSymB())
+    report_fatal_error("Auth relocation can't reference two symbols");
+
+  Res = MCValue::get(Res.getSymA(), nullptr, Res.getConstant(), getKind());
+
+  return true;
+}
+
+void AArch64AuthMCExpr::fixELFSymbolsInTLSFixups(MCAssembler &Asm) const {
+  llvm_unreachable("FIXME");
 }

@@ -1,12 +1,12 @@
-; RUN: opt < %s -pgo-memop-opt -pgo-memop-count-threshold=90 -pgo-memop-percent-threshold=15 -S | FileCheck %s --check-prefix=MEMOP_OPT
-; RUN: opt < %s -passes=pgo-memop-opt -pgo-memop-count-threshold=90 -pgo-memop-percent-threshold=15 -S | FileCheck %s --check-prefix=MEMOP_OPT
-; RUN: opt < %s -pgo-memop-opt -pgo-memop-count-threshold=90 -pgo-memop-percent-threshold=15 -pass-remarks-with-hotness -pass-remarks-output=%t.opt.yaml -S | FileCheck %s --check-prefix=MEMOP_OPT
+; RUN: opt < %s -pgo-memop-opt -verify-dom-info -pgo-memop-count-threshold=90 -pgo-memop-percent-threshold=15 -S | FileCheck %s --check-prefix=MEMOP_OPT
+; RUN: opt < %s -passes=pgo-memop-opt -verify-dom-info -pgo-memop-count-threshold=90 -pgo-memop-percent-threshold=15 -S | FileCheck %s --check-prefix=MEMOP_OPT
+; RUN: opt < %s -pgo-memop-opt -verify-dom-info -pgo-memop-count-threshold=90 -pgo-memop-percent-threshold=15 -pass-remarks-with-hotness -pass-remarks-output=%t.opt.yaml -S | FileCheck %s --check-prefix=MEMOP_OPT
 ; RUN: FileCheck %s -input-file=%t.opt.yaml --check-prefix=YAML
-; RUN: opt < %s -passes=pgo-memop-opt -pgo-memop-count-threshold=90 -pgo-memop-percent-threshold=15 -pass-remarks-with-hotness -pass-remarks-output=%t.opt.yaml -S | FileCheck %s --check-prefix=MEMOP_OPT
+; RUN: opt < %s -passes=pgo-memop-opt -verify-dom-info -pgo-memop-count-threshold=90 -pgo-memop-percent-threshold=15 -pass-remarks-with-hotness -pass-remarks-output=%t.opt.yaml -S | FileCheck %s --check-prefix=MEMOP_OPT
 ; RUN: FileCheck %s -input-file=%t.opt.yaml --check-prefix=YAML
 
 
-target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
 define void @foo(i8* %dst, i8* %src, i8* %dst2, i8* %src2, i32* %a, i32 %n) !prof !27 {
@@ -32,28 +32,28 @@ for.cond1:
 for.body3:
   %add = add nsw i32 %i.0, 1
   %conv = sext i32 %add to i64
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst, i8* %src, i64 %conv, i32 1, i1 false), !prof !30
-  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst2, i8* %src2, i64 %conv, i32 1, i1 false), !prof !31
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst, i8* %src, i64 %conv, i1 false), !prof !30
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst2, i8* %src2, i64 %conv, i1 false), !prof !31
   br label %for.inc
 
 ; MEMOP_OPT:  switch i64 %conv, label %[[DEFAULT_LABEL:.*]] [
 ; MEMOP_OPT:    i64 1, label %[[CASE_1_LABEL:.*]]
 ; MEMOP_OPT:  ], !prof [[SWITCH_BW:![0-9]+]] 
 ; MEMOP_OPT: [[CASE_1_LABEL]]:
-; MEMOP_OPT:   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst, i8* %src, i64 1, i32 1, i1 false)
+; MEMOP_OPT:   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst, i8* %src, i64 1, i1 false)
 ; MEMOP_OPT:   br label %[[MERGE_LABEL:.*]]
 ; MEMOP_OPT: [[DEFAULT_LABEL]]:
-; MEMOP_OPT:   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst, i8* %src, i64 %conv, i32 1, i1 false), !prof [[NEWVP:![0-9]+]]
+; MEMOP_OPT:   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst, i8* %src, i64 %conv, i1 false), !prof [[NEWVP:![0-9]+]]
 ; MEMOP_OPT:   br label %[[MERGE_LABEL]]
 ; MEMOP_OPT: [[MERGE_LABEL]]:
 ; MEMOP_OPT:  switch i64 %conv, label %[[DEFAULT_LABEL2:.*]] [
 ; MEMOP_OPT:    i64 1, label %[[CASE_1_LABEL2:.*]]
 ; MEMOP_OPT:  ], !prof [[SWITCH_BW:![0-9]+]] 
 ; MEMOP_OPT: [[CASE_1_LABEL2]]:
-; MEMOP_OPT:   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst2, i8* %src2, i64 1, i32 1, i1 false)
+; MEMOP_OPT:   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst2, i8* %src2, i64 1, i1 false)
 ; MEMOP_OPT:   br label %[[MERGE_LABEL2:.*]]
 ; MEMOP_OPT: [[DEFAULT_LABEL2]]:
-; MEMOP_OPT:   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst2, i8* %src2, i64 %conv, i32 1, i1 false), !prof [[NEWVP]]
+; MEMOP_OPT:   call void @llvm.memcpy.p0i8.p0i8.i64(i8* %dst2, i8* %src2, i64 %conv, i1 false), !prof [[NEWVP]]
 ; MEMOP_OPT:   br label %[[MERGE_LABEL2]]
 ; MEMOP_OPT: [[MERGE_LABEL2]]:
 ; MEMOP_OPT:   br label %for.inc
@@ -116,7 +116,7 @@ for.end6:
 
 declare void @llvm.lifetime.start(i64, i8* nocapture)
 
-declare void @llvm.memcpy.p0i8.p0i8.i64(i8* nocapture writeonly, i8* nocapture readonly, i64, i32, i1)
+declare void @llvm.memcpy.p0i8.p0i8.i64(i8* nocapture writeonly, i8* nocapture readonly, i64, i1)
 
 declare void @llvm.lifetime.end(i64, i8* nocapture)
 

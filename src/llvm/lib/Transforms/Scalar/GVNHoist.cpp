@@ -1,9 +1,8 @@
 //===- GVNHoist.cpp - Hoist scalar and load expressions -------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -65,6 +64,7 @@
 #include "llvm/IR/Use.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
@@ -246,8 +246,8 @@ static void combineKnownMetadata(Instruction *ReplInst, Instruction *I) {
       LLVMContext::MD_tbaa,           LLVMContext::MD_alias_scope,
       LLVMContext::MD_noalias,        LLVMContext::MD_range,
       LLVMContext::MD_fpmath,         LLVMContext::MD_invariant_load,
-      LLVMContext::MD_invariant_group};
-  combineMetadata(ReplInst, I, KnownIDs);
+      LLVMContext::MD_invariant_group, LLVMContext::MD_access_group};
+  combineMetadata(ReplInst, I, KnownIDs, true);
 }
 
 // This pass hoists common computations across branches sharing common
@@ -258,7 +258,7 @@ public:
   GVNHoist(DominatorTree *DT, PostDominatorTree *PDT, AliasAnalysis *AA,
            MemoryDependenceResults *MD, MemorySSA *MSSA)
       : DT(DT), PDT(PDT), AA(AA), MD(MD), MSSA(MSSA),
-        MSSAUpdater(llvm::make_unique<MemorySSAUpdater>(MSSA)) {}
+        MSSAUpdater(std::make_unique<MemorySSAUpdater>(MSSA)) {}
 
   bool run(Function &F) {
     NumFuncArgs = F.arg_size();
@@ -365,7 +365,7 @@ private:
 
   // Return true when a successor of BB dominates A.
   bool successorDominate(const BasicBlock *BB, const BasicBlock *A) {
-    for (const BasicBlock *Succ : BB->getTerminator()->successors())
+    for (const BasicBlock *Succ : successors(BB))
       if (DT->dominates(Succ, A))
         return true;
 
@@ -534,13 +534,13 @@ private:
 
     if (NewBB == DBB && !MSSA->isLiveOnEntryDef(D))
       if (auto *UD = dyn_cast<MemoryUseOrDef>(D))
-        if (firstInBB(NewPt, UD->getMemoryInst()))
+        if (!firstInBB(UD->getMemoryInst(), NewPt))
           // Cannot move the load or store to NewPt above its definition in D.
           return false;
 
     // Check for unsafe hoistings due to side effects.
     if (K == InsKind::Store) {
-      if (hasEHOrLoadsOnPath(NewPt, dyn_cast<MemoryDef>(U), NBBsOnAllPaths))
+      if (hasEHOrLoadsOnPath(NewPt, cast<MemoryDef>(U), NBBsOnAllPaths))
         return false;
     } else if (hasEHOnPath(NewBB, OldBB, NBBsOnAllPaths))
       return false;
@@ -570,22 +570,22 @@ private:
   // The ides is inspired from:
   // "Partial Redundancy Elimination in SSA Form"
   // ROBERT KENNEDY, SUN CHAN, SHIN-MING LIU, RAYMOND LO, PENG TU and FRED CHOW
-  // They use similar idea in the forward graph to to find fully redundant and
+  // They use similar idea in the forward graph to find fully redundant and
   // partially redundant expressions, here it is used in the inverse graph to
   // find fully anticipable instructions at merge point (post-dominator in
   // the inverse CFG).
   // Returns the edge via which an instruction in BB will get the values from.
 
   // Returns true when the values are flowing out to each edge.
-  bool valueAnticipable(CHIArgs C, TerminatorInst *TI) const {
-    if (TI->getNumSuccessors() > (unsigned)std::distance(C.begin(), C.end()))
+  bool valueAnticipable(CHIArgs C, Instruction *TI) const {
+    if (TI->getNumSuccessors() > (unsigned)size(C))
       return false; // Not enough args in this CHI.
 
     for (auto CHI : C) {
       BasicBlock *Dest = CHI.Dest;
       // Find if all the edges have values flowing out of BB.
-      bool Found = llvm::any_of(TI->successors(), [Dest](const BasicBlock *BB) {
-          return BB == Dest; });
+      bool Found = llvm::any_of(
+          successors(TI), [Dest](const BasicBlock *BB) { return BB == Dest; });
       if (!Found)
         return false;
     }
@@ -622,7 +622,7 @@ private:
       // Iterate in reverse order to keep lower ranked values on the top.
       for (std::pair<VNType, Instruction *> &VI : reverse(it1->second)) {
         // Get the value of instruction I
-        DEBUG(dbgs() << "\nPushing on stack: " << *VI.second);
+        LLVM_DEBUG(dbgs() << "\nPushing on stack: " << *VI.second);
         RenameStack[VI.first].push_back(VI.second);
       }
     }
@@ -636,7 +636,7 @@ private:
       if (P == CHIBBs.end()) {
         continue;
       }
-      DEBUG(dbgs() << "\nLooking at CHIs in: " << Pred->getName(););
+      LLVM_DEBUG(dbgs() << "\nLooking at CHIs in: " << Pred->getName(););
       // A CHI is found (BB -> Pred is an edge in the CFG)
       // Pop the stack until Top(V) = Ve.
       auto &VCHI = P->second;
@@ -651,9 +651,9 @@ private:
               DT->properlyDominates(Pred, si->second.back()->getParent())) {
             C.Dest = BB;                     // Assign the edge
             C.I = si->second.pop_back_val(); // Assign the argument
-            DEBUG(dbgs() << "\nCHI Inserted in BB: " << C.Dest->getName()
-                         << *C.I << ", VN: " << C.VN.first << ", "
-                         << C.VN.second);
+            LLVM_DEBUG(dbgs()
+                       << "\nCHI Inserted in BB: " << C.Dest->getName() << *C.I
+                       << ", VN: " << C.VN.first << ", " << C.VN.second);
           }
           // Move to next CHI of a different value
           It = std::find_if(It, VCHI.end(),
@@ -703,7 +703,7 @@ private:
       // Vector of PHIs contains PHIs for different instructions.
       // Sort the args according to their VNs, such that identical
       // instructions are together.
-      std::stable_sort(CHIs.begin(), CHIs.end(), cmpVN);
+      llvm::stable_sort(CHIs, cmpVN);
       auto TI = BB->getTerminator();
       auto B = CHIs.begin();
       // [PreIt, PHIIt) form a range of CHIs which have identical VNs.
@@ -748,11 +748,9 @@ private:
     // TODO: Remove fully-redundant expressions.
     // Get instruction from the Map, assume that all the Instructions
     // with same VNs have same rank (this is an approximation).
-    std::sort(Ranks.begin(), Ranks.end(),
-              [this, &Map](const VNType &r1, const VNType &r2) {
-                return (rank(*Map.lookup(r1).begin()) <
-                        rank(*Map.lookup(r2).begin()));
-              });
+    llvm::sort(Ranks, [this, &Map](const VNType &r1, const VNType &r2) {
+      return (rank(*Map.lookup(r1).begin()) < rank(*Map.lookup(r2).begin()));
+    });
 
     // - Sort VNs according to their rank, and start with lowest ranked VN
     // - Take a VN and for each instruction with same VN
@@ -784,6 +782,7 @@ private:
       // which currently have dead terminators that are control
       // dependence sources of a block which is in NewLiveBlocks.
       IDFs.setDefiningBlocks(VNBlocks);
+      IDFBlocks.clear();
       IDFs.calculate(IDFBlocks);
 
       // Make a map of BB vs instructions to be hoisted.
@@ -792,14 +791,14 @@ private:
       }
       // Insert empty CHI node for this VN. This is used to factor out
       // basic blocks where the ANTIC can potentially change.
-      for (auto IDFB : IDFBlocks) { // TODO: Prune out useless CHI insertions.
+      for (auto IDFB : IDFBlocks) {
         for (unsigned i = 0; i < V.size(); ++i) {
           CHIArg C = {VN, nullptr, nullptr};
            // Ignore spurious PDFs.
           if (DT->properlyDominates(IDFB, V[i]->getParent())) {
             OutValue[IDFB].push_back(C);
-            DEBUG(dbgs() << "\nInsertion a CHI for BB: " << IDFB->getName()
-                         << ", for Insn: " << *V[i]);
+            LLVM_DEBUG(dbgs() << "\nInsertion a CHI for BB: " << IDFB->getName()
+                              << ", for Insn: " << *V[i]);
           }
         }
       }
@@ -891,19 +890,18 @@ private:
 
   void updateAlignment(Instruction *I, Instruction *Repl) {
     if (auto *ReplacementLoad = dyn_cast<LoadInst>(Repl)) {
-      ReplacementLoad->setAlignment(
-          std::min(ReplacementLoad->getAlignment(),
-                   cast<LoadInst>(I)->getAlignment()));
+      ReplacementLoad->setAlignment(MaybeAlign(std::min(
+          ReplacementLoad->getAlignment(), cast<LoadInst>(I)->getAlignment())));
       ++NumLoadsRemoved;
     } else if (auto *ReplacementStore = dyn_cast<StoreInst>(Repl)) {
       ReplacementStore->setAlignment(
-          std::min(ReplacementStore->getAlignment(),
-                   cast<StoreInst>(I)->getAlignment()));
+          MaybeAlign(std::min(ReplacementStore->getAlignment(),
+                              cast<StoreInst>(I)->getAlignment())));
       ++NumStoresRemoved;
     } else if (auto *ReplacementAlloca = dyn_cast<AllocaInst>(Repl)) {
       ReplacementAlloca->setAlignment(
-          std::max(ReplacementAlloca->getAlignment(),
-                   cast<AllocaInst>(I)->getAlignment()));
+          MaybeAlign(std::max(ReplacementAlloca->getAlignment(),
+                              cast<AllocaInst>(I)->getAlignment())));
     } else if (isa<CallInst>(Repl)) {
       ++NumCallsRemoved;
     }
@@ -959,7 +957,8 @@ private:
     if (MoveAccess && NewMemAcc) {
         // The definition of this ld/st will not change: ld/st hoisting is
         // legal when the ld/st is not moved past its current definition.
-        MSSAUpdater->moveToPlace(NewMemAcc, DestBB, MemorySSA::End);
+        MSSAUpdater->moveToPlace(NewMemAcc, DestBB,
+                                 MemorySSA::BeforeTerminator);
     }
 
     // Replace all other instructions with Repl with memory access NewMemAcc.
@@ -1070,6 +1069,9 @@ private:
         ++NI;
     }
 
+    if (MSSA && VerifyMemorySSA)
+      MSSA->verifyMemorySSA();
+
     NumHoisted += NL + NS + NC + NI;
     NumRemoved += NR;
     NumLoadsHoisted += NL;
@@ -1100,7 +1102,7 @@ private:
           break;
 
         // Do not value number terminator instructions.
-        if (isa<TerminatorInst>(&I1))
+        if (I1.isTerminator())
           break;
 
         if (auto *Load = dyn_cast<LoadInst>(&I1))
@@ -1171,6 +1173,7 @@ public:
     AU.addPreserved<DominatorTreeWrapperPass>();
     AU.addPreserved<MemorySSAWrapperPass>();
     AU.addPreserved<GlobalsAAWrapperPass>();
+    AU.addPreserved<AAResultsWrapperPass>();
   }
 };
 
@@ -1200,6 +1203,7 @@ INITIALIZE_PASS_BEGIN(GVNHoistLegacyPass, "gvn-hoist",
 INITIALIZE_PASS_DEPENDENCY(MemoryDependenceWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(MemorySSAWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(DominatorTreeWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(PostDominatorTreeWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
 INITIALIZE_PASS_END(GVNHoistLegacyPass, "gvn-hoist",
                     "Early GVN Hoisting of Expressions", false, false)

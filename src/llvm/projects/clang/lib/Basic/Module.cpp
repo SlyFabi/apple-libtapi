@@ -1,9 +1,8 @@
 //===- Module.cpp - Describe a module -------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -38,14 +37,19 @@ using namespace clang;
 Module::Module(StringRef Name, SourceLocation DefinitionLoc, Module *Parent,
                bool IsFramework, bool IsExplicit, unsigned VisibilityID)
     : Name(Name), DefinitionLoc(DefinitionLoc), Parent(Parent), Directory(),
-      Umbrella(), ASTFile(nullptr), VisibilityID(VisibilityID),
-      IsMissingRequirement(false), HasIncompatibleModuleFile(false),
-      IsAvailable(true), IsFromModuleFile(false), IsFramework(IsFramework),
-      IsExplicit(IsExplicit), IsSystem(false), IsExternC(false),
-      IsInferred(false), IsSwiftInferImportAsMember(false),
+      Umbrella(), ASTFile(nullptr),
+      VisibilityID(VisibilityID), IsMissingRequirement(false),
+      HasIncompatibleModuleFile(false), IsAvailable(true),
+      IsFromModuleFile(false), IsFramework(IsFramework), IsExplicit(IsExplicit),
+      IsSystem(false), IsExternC(false), IsInferred(false),
       InferSubmodules(false), InferExplicitSubmodules(false),
       InferExportWildcard(false), ConfigMacrosExhaustive(false),
       NoUndeclaredIncludes(false), ModuleMapIsPrivate(false),
+
+      // SWIFT-SPECIFIC FIELDS HERE. Handling them separately helps avoid merge
+      // conflicts.
+      IsSwiftInferImportAsMember(false),
+
       NameVisibility(Hidden) {
   if (Parent) {
     if (!Parent->isAvailable())
@@ -59,7 +63,7 @@ Module::Module(StringRef Name, SourceLocation DefinitionLoc, Module *Parent,
     if (Parent->ModuleMapIsPrivate)
       ModuleMapIsPrivate = true;
     IsMissingRequirement = Parent->IsMissingRequirement;
-    
+
     Parent->SubModuleIndex[Name] = Parent->SubModules.size();
     Parent->SubModules.push_back(this);
   }
@@ -72,14 +76,45 @@ Module::~Module() {
   }
 }
 
-/// \brief Determine whether a translation unit built using the current
+static bool isPlatformEnvironment(const TargetInfo &Target, StringRef Feature) {
+  StringRef Platform = Target.getPlatformName();
+  StringRef Env = Target.getTriple().getEnvironmentName();
+
+  // Attempt to match platform and environment.
+  if (Platform == Feature || Target.getTriple().getOSName() == Feature ||
+      Env == Feature)
+    return true;
+
+  auto CmpPlatformEnv = [](StringRef LHS, StringRef RHS) {
+    auto Pos = LHS.find("-");
+    if (Pos == StringRef::npos)
+      return false;
+    SmallString<128> NewLHS = LHS.slice(0, Pos);
+    NewLHS += LHS.slice(Pos+1, LHS.size());
+    return NewLHS == RHS;
+  };
+
+  SmallString<128> PlatformEnv = Target.getTriple().getOSAndEnvironmentName();
+  // Darwin has different but equivalent variants for simulators, example:
+  //   1. x86_64-apple-ios-simulator
+  //   2. x86_64-apple-iossimulator
+  // where both are valid examples of the same platform+environment but in the
+  // variant (2) the simulator is hardcoded as part of the platform name. Both
+  // forms above should match for "iossimulator" requirement.
+  if (Target.getTriple().isOSDarwin() && PlatformEnv.endswith("simulator"))
+    return PlatformEnv == Feature || CmpPlatformEnv(PlatformEnv, Feature);
+
+  return PlatformEnv == Feature;
+}
+
+/// Determine whether a translation unit built using the current
 /// language options has the given feature.
 static bool hasFeature(StringRef Feature, const LangOptions &LangOpts,
                        const TargetInfo &Target) {
   bool HasFeature = llvm::StringSwitch<bool>(Feature)
                         .Case("altivec", LangOpts.AltiVec)
                         .Case("blocks", LangOpts.Blocks)
-                        .Case("coroutines", LangOpts.CoroutinesTS)
+                        .Case("coroutines", LangOpts.Coroutines)
                         .Case("cplusplus", LangOpts.CPlusPlus)
                         .Case("cplusplus11", LangOpts.CPlusPlus11)
                         .Case("cplusplus14", LangOpts.CPlusPlus14)
@@ -89,12 +124,13 @@ static bool hasFeature(StringRef Feature, const LangOptions &LangOpts,
                         .Case("c17", LangOpts.C17)
                         .Case("freestanding", LangOpts.Freestanding)
                         .Case("gnuinlineasm", LangOpts.GNUAsm)
-                        .Case("objc", LangOpts.ObjC1)
+                        .Case("objc", LangOpts.ObjC)
                         .Case("objc_arc", LangOpts.ObjCAutoRefCount)
                         .Case("opencl", LangOpts.OpenCL)
                         .Case("tls", Target.isTLSSupported())
                         .Case("zvector", LangOpts.ZVector)
-                        .Default(Target.hasFeature(Feature));
+                        .Default(Target.hasFeature(Feature) ||
+                                 isPlatformEnvironment(Target, Feature));
   if (!HasFeature)
     HasFeature = std::find(LangOpts.ModuleFeatures.begin(),
                            LangOpts.ModuleFeatures.end(),
@@ -135,10 +171,10 @@ bool Module::isSubModuleOf(const Module *Other) const {
   do {
     if (This == Other)
       return true;
-    
+
     This = This->Parent;
   } while (This);
-  
+
   return false;
 }
 
@@ -146,7 +182,7 @@ const Module *Module::getTopLevelModule() const {
   const Module *Result = this;
   while (Result->Parent)
     Result = Result->Parent;
-  
+
   return Result;
 }
 
@@ -182,16 +218,16 @@ static void printModuleId(raw_ostream &OS, const Container &C) {
 
 std::string Module::getFullModuleName(bool AllowStringLiterals) const {
   SmallVector<StringRef, 2> Names;
-  
+
   // Build up the set of module names (from innermost to outermost).
   for (const Module *M = this; M; M = M->Parent)
     Names.push_back(M->Name);
-  
+
   std::string Result;
 
   llvm::raw_string_ostream Out(Result);
   printModuleId(Out, Names.rbegin(), Names.rend(), AllowStringLiterals);
-  Out.flush(); 
+  Out.flush();
 
   return Result;
 }
@@ -207,17 +243,18 @@ bool Module::fullModuleNameIs(ArrayRef<StringRef> nameParts) const {
 
 Module::DirectoryName Module::getUmbrellaDir() const {
   if (Header U = getUmbrellaHeader())
-    return {"", U.Entry->getDir()};
-  
-  return {UmbrellaAsWritten, Umbrella.dyn_cast<const DirectoryEntry *>()};
+    return {"", "", U.Entry->getDir()};
+
+  return {UmbrellaAsWritten, UmbrellaRelativeToRootModuleDirectory,
+          Umbrella.dyn_cast<const DirectoryEntry *>()};
 }
 
 ArrayRef<const FileEntry *> Module::getTopHeaders(FileManager &FileMgr) {
   if (!TopHeaderNames.empty()) {
     for (std::vector<std::string>::iterator
            I = TopHeaderNames.begin(), E = TopHeaderNames.end(); I != E; ++I) {
-      if (const FileEntry *FE = FileMgr.getFile(*I))
-        TopHeaders.insert(FE);
+      if (auto FE = FileMgr.getFile(*I))
+        TopHeaders.insert(*FE);
     }
     TopHeaderNames.clear();
   }
@@ -289,6 +326,21 @@ Module *Module::findSubmodule(StringRef Name) const {
     return nullptr;
 
   return SubModules[Pos->getValue()];
+}
+
+Module *Module::findOrInferSubmodule(StringRef Name) {
+  llvm::StringMap<unsigned>::const_iterator Pos = SubModuleIndex.find(Name);
+  if (Pos != SubModuleIndex.end())
+    return SubModules[Pos->getValue()];
+  if (!InferSubmodules)
+    return nullptr;
+  Module *Result = new Module(Name, SourceLocation(), this, false, InferExplicitSubmodules, 0);
+  Result->InferExplicitSubmodules = InferExplicitSubmodules;
+  Result->InferSubmodules = InferSubmodules;
+  Result->InferExportWildcard = InferExportWildcard;
+  if (Result->InferExportWildcard)
+    Result->Exports.push_back(Module::ExportDecl(nullptr, true));
+  return Result;
 }
 
 void Module::getExportedModules(SmallVectorImpl<Module *> &Exported) const {
@@ -391,7 +443,7 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
   }
 
   OS << " {\n";
-  
+
   if (!Requirements.empty()) {
     OS.indent(Indent + 2);
     OS << "requires ";
@@ -404,7 +456,7 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     }
     OS << "\n";
   }
-  
+
   if (Header H = getUmbrellaHeader()) {
     OS.indent(Indent + 2);
     OS << "umbrella header \"";
@@ -414,7 +466,7 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS.indent(Indent + 2);
     OS << "umbrella \"";
     OS.write_escaped(D.NameAsWritten);
-    OS << "\"\n";    
+    OS << "\"\n";
   }
 
   if (!ConfigMacros.empty() || ConfigMacrosExhaustive) {
@@ -471,7 +523,7 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS.indent(Indent + 2);
     OS << "export_as" << ExportAsModule << "\n";
   }
-  
+
   for (submodule_const_iterator MI = submodule_begin(), MIEnd = submodule_end();
        MI != MIEnd; ++MI)
     // Print inferred subframework modules so that we don't need to re-infer
@@ -480,7 +532,7 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     // those header files anyway.
     if (!(*MI)->IsInferred || (*MI)->IsFramework)
       (*MI)->print(OS, Indent + 2);
-  
+
   for (unsigned I = 0, N = Exports.size(); I != N; ++I) {
     OS.indent(Indent + 2);
     OS << "export ";
@@ -557,7 +609,7 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS.indent(Indent + 2);
     OS << "}\n";
   }
-  
+
   OS.indent(Indent);
   OS << "}\n";
 }
@@ -580,10 +632,6 @@ void VisibleModuleSet::setVisible(Module *M, SourceLocation Loc,
   };
 
   std::function<void(Visiting)> VisitModule = [&](Visiting V) {
-    // Modules that aren't available cannot be made visible.
-    if (!V.M->isAvailable())
-      return;
-
     // Nothing to do for a module that's already visible.
     unsigned ID = V.M->getVisibilityID();
     if (ImportLocs.size() <= ID)
@@ -597,8 +645,11 @@ void VisibleModuleSet::setVisible(Module *M, SourceLocation Loc,
     // Make any exported modules visible.
     SmallVector<Module *, 16> Exports;
     V.M->getExportedModules(Exports);
-    for (Module *E : Exports)
-      VisitModule({E, &V});
+    for (Module *E : Exports) {
+      // Don't recurse to unavailable submodules.
+      if (E->isAvailable())
+        VisitModule({E, &V});
+    }
 
     for (auto &C : V.M->Conflicts) {
       if (isVisible(C.Other)) {

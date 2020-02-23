@@ -1,9 +1,8 @@
 //===- CoroInternal.h - Internal Coroutine interfaces ---------*- C++ -*---===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // Common definitions/declarations used internally by coroutine lowering passes.
@@ -22,10 +21,10 @@ class CallGraph;
 class CallGraphSCC;
 class PassRegistry;
 
-void initializeCoroEarlyPass(PassRegistry &);
-void initializeCoroSplitPass(PassRegistry &);
-void initializeCoroElidePass(PassRegistry &);
-void initializeCoroCleanupPass(PassRegistry &);
+void initializeCoroEarlyLegacyPass(PassRegistry &);
+void initializeCoroSplitLegacyPass(PassRegistry &);
+void initializeCoroElideLegacyPass(PassRegistry &);
+void initializeCoroCleanupLegacyPass(PassRegistry &);
 
 // CoroEarly pass marks every function that has coro.begin with a string
 // attribute "coroutine.presplit"="0". CoroSplit pass processes the coroutine
@@ -44,7 +43,8 @@ void initializeCoroCleanupPass(PassRegistry &);
 
 namespace coro {
 
-bool declaresIntrinsics(Module &M, std::initializer_list<StringRef>);
+bool declaresIntrinsics(const Module &M,
+                        const std::initializer_list<StringRef>);
 void replaceAllCoroAllocs(CoroBeginInst *CB, bool Replacement);
 void replaceAllCoroFrees(CoroBeginInst *CB, Value *Replacement);
 void replaceCoroFree(CoroIdInst *CoroId, bool Elide);
@@ -90,6 +90,7 @@ struct LLVM_LIBRARY_VISIBILITY Shape {
   SmallVector<CoroEndInst *, 4> CoroEnds;
   SmallVector<CoroSizeInst *, 2> CoroSizes;
   SmallVector<AnyCoroSuspendInst *, 4> CoroSuspends;
+  SmallVector<CallInst*, 2> SwiftErrorOps;
 
   // Field indexes for special fields in the switch lowering.
   struct SwitchFieldIndex {
@@ -149,17 +150,23 @@ struct LLVM_LIBRARY_VISIBILITY Shape {
     return ConstantInt::get(getIndexType(), Value);
   }
 
+  PointerType *getSwitchResumePointerType() const {
+    assert(ABI == coro::ABI::Switch);
+  assert(FrameTy && "frame type not assigned");
+  return cast<PointerType>(FrameTy->getElementType(SwitchFieldIndex::Resume));
+  }
+
   FunctionType *getResumeFunctionType() const {
     switch (ABI) {
     case coro::ABI::Switch: {
-      assert(FrameTy && "frame type not assigned");
-      auto *FnPtrTy = FrameTy->getElementType(SwitchFieldIndex::Resume);
+      auto *FnPtrTy = getSwitchResumePointerType();
       return cast<FunctionType>(FnPtrTy->getPointerElementType());
     }
     case coro::ABI::Retcon:
     case coro::ABI::RetconOnce:
       return RetconLowering.ResumePrototype->getFunctionType();
     }
+    llvm_unreachable("Unknown coro::ABI enum");
   }
 
   ArrayRef<Type*> getRetconResultTypes() const {
@@ -193,6 +200,7 @@ struct LLVM_LIBRARY_VISIBILITY Shape {
     case coro::ABI::RetconOnce:
       return RetconLowering.ResumePrototype->getCallingConv();
     }
+    llvm_unreachable("Unknown coro::ABI enum");
   }
 
   unsigned getFirstSpillFieldIndex() const {
@@ -203,7 +211,8 @@ struct LLVM_LIBRARY_VISIBILITY Shape {
     case coro::ABI::Retcon:
     case coro::ABI::RetconOnce:
       return 0;
-    }    
+    }
+    llvm_unreachable("Unknown coro::ABI enum");
   }
 
   AllocaInst *getPromiseAlloca() const {

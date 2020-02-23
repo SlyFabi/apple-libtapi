@@ -1,9 +1,8 @@
 //==---- CodeGenABITypes.h - Convert Clang types to LLVM types for ABI -----==//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -29,8 +28,10 @@
 #include "clang/CodeGen/CGFunctionInfo.h"
 
 namespace llvm {
+  class Constant;
   class DataLayout;
   class Module;
+  class Function;
   class FunctionType;
   class Type;
 }
@@ -42,6 +43,7 @@ class CXXMethodDecl;
 class CodeGenOptions;
 class CoverageSourceInfo;
 class DiagnosticsEngine;
+class GlobalDecl;
 class HeaderSearchOptions;
 class ObjCMethodDecl;
 class PreprocessorOptions;
@@ -55,8 +57,7 @@ const CGFunctionInfo &arrangeObjCMessageSendSignature(CodeGenModule &CGM,
                                                       QualType receiverType);
 
 const CGFunctionInfo &arrangeFreeFunctionType(CodeGenModule &CGM,
-                                              CanQual<FunctionProtoType> Ty,
-                                              const FunctionDecl *FD);
+                                              CanQual<FunctionProtoType> Ty);
 
 const CGFunctionInfo &arrangeFreeFunctionType(CodeGenModule &CGM,
                                               CanQual<FunctionNoProtoType> Ty);
@@ -84,6 +85,79 @@ llvm::Type *convertTypeForMemory(CodeGenModule &CGM, QualType T);
 /// be a field in RD directly (i.e. not an inherited field).
 unsigned getLLVMFieldNumber(CodeGenModule &CGM,
                             const RecordDecl *RD, const FieldDecl *FD);
+
+/// Compute a stable hash of the given string.
+///
+/// The exact algorithm is the little-endian interpretation of the
+/// non-doubled (i.e. 64-bit) result of applying a SipHash-2-4 using
+/// a specific key value which can be found in the source.
+uint64_t computeStableStringHash(StringRef string);
+
+/// Return a declaration discriminator for the given global decl.
+uint16_t getPointerAuthDeclDiscriminator(CodeGenModule &CGM, GlobalDecl GD);
+
+/// Return a type discriminator for the given function type.
+uint16_t getPointerAuthTypeDiscriminator(CodeGenModule &CGM, QualType fnType);
+
+/// Return a signed constant pointer.
+llvm::Constant *getConstantSignedPointer(CodeGenModule &CGM,
+                                         llvm::Constant *pointer,
+                                         unsigned key,
+                                         llvm::Constant *storageAddress,
+                                         llvm::Constant *otherDiscriminator);
+
+/// Returns the default constructor for a C struct with non-trivially copyable
+/// fields, generating it if necessary. The returned function uses the `cdecl`
+/// calling convention, returns void, and takes a single argument that is a
+/// pointer to the address of the struct.
+llvm::Function *getNonTrivialCStructDefaultConstructor(CodeGenModule &GCM,
+                                                       CharUnits DstAlignment,
+                                                       bool IsVolatile,
+                                                       QualType QT);
+
+/// Returns the copy constructor for a C struct with non-trivially copyable
+/// fields, generating it if necessary. The returned function uses the `cdecl`
+/// calling convention, returns void, and takes two arguments: pointers to the
+/// addresses of the destination and source structs, respectively.
+llvm::Function *getNonTrivialCStructCopyConstructor(CodeGenModule &CGM,
+                                                    CharUnits DstAlignment,
+                                                    CharUnits SrcAlignment,
+                                                    bool IsVolatile,
+                                                    QualType QT);
+
+/// Returns the move constructor for a C struct with non-trivially copyable
+/// fields, generating it if necessary. The returned function uses the `cdecl`
+/// calling convention, returns void, and takes two arguments: pointers to the
+/// addresses of the destination and source structs, respectively.
+llvm::Function *getNonTrivialCStructMoveConstructor(CodeGenModule &CGM,
+                                                    CharUnits DstAlignment,
+                                                    CharUnits SrcAlignment,
+                                                    bool IsVolatile,
+                                                    QualType QT);
+
+/// Returns the copy assignment operator for a C struct with non-trivially
+/// copyable fields, generating it if necessary. The returned function uses the
+/// `cdecl` calling convention, returns void, and takes two arguments: pointers
+/// to the addresses of the destination and source structs, respectively.
+llvm::Function *getNonTrivialCStructCopyAssignmentOperator(
+    CodeGenModule &CGM, CharUnits DstAlignment, CharUnits SrcAlignment,
+    bool IsVolatile, QualType QT);
+
+/// Return the move assignment operator for a C struct with non-trivially
+/// copyable fields, generating it if necessary. The returned function uses the
+/// `cdecl` calling convention, returns void, and takes two arguments: pointers
+/// to the addresses of the destination and source structs, respectively.
+llvm::Function *getNonTrivialCStructMoveAssignmentOperator(
+    CodeGenModule &CGM, CharUnits DstAlignment, CharUnits SrcAlignment,
+    bool IsVolatile, QualType QT);
+
+/// Returns the destructor for a C struct with non-trivially copyable fields,
+/// generating it if necessary. The returned function uses the `cdecl` calling
+/// convention, returns void, and takes a single argument that is a pointer to
+/// the address of the struct.
+llvm::Function *getNonTrivialCStructDestructor(CodeGenModule &CGM,
+                                               CharUnits DstAlignment,
+                                               bool IsVolatile, QualType QT);
 
 }  // end namespace CodeGen
 }  // end namespace clang

@@ -1,9 +1,8 @@
 //===- HexagonGenInsert.cpp -----------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -30,6 +29,7 @@
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
@@ -54,6 +54,12 @@ static cl::opt<unsigned> VRegIndexCutoff("insert-vreg-cutoff", cl::init(~0U),
 static cl::opt<unsigned> VRegDistCutoff("insert-dist-cutoff", cl::init(30U),
   cl::Hidden, cl::ZeroOrMore, cl::desc("Vreg distance cutoff for insert "
   "generation."));
+
+// Limit the container sizes for extreme cases where we run out of memory.
+static cl::opt<unsigned> MaxORLSize("insert-max-orl", cl::init(4096),
+  cl::Hidden, cl::ZeroOrMore, cl::desc("Maximum size of OrderedRegisterList"));
+static cl::opt<unsigned> MaxIFMSize("insert-max-ifmap", cl::init(1024),
+  cl::Hidden, cl::ZeroOrMore, cl::desc("Maximum size of IFMap"));
 
 static cl::opt<bool> OptTiming("insert-timing", cl::init(false), cl::Hidden,
   cl::ZeroOrMore, cl::desc("Enable timing of insert generation"));
@@ -86,6 +92,11 @@ namespace {
   struct RegisterSet : private BitVector {
     RegisterSet() = default;
     explicit RegisterSet(unsigned s, bool t = false) : BitVector(s, t) {}
+    RegisterSet(const RegisterSet &RS) : BitVector(RS) {}
+    RegisterSet &operator=(const RegisterSet &RS) {
+      BitVector::operator=(RS);
+      return *this;
+    }
 
     using BitVector::clear;
 
@@ -157,11 +168,11 @@ namespace {
     }
 
     static inline unsigned v2x(unsigned v) {
-      return TargetRegisterInfo::virtReg2Index(v);
+      return Register::virtReg2Index(v);
     }
 
     static inline unsigned x2v(unsigned x) {
-      return TargetRegisterInfo::index2VirtReg(x);
+      return Register::index2VirtReg(x);
     }
   };
 
@@ -261,7 +272,7 @@ namespace {
     CellMapShadow(const BitTracker &T) : BT(T) {}
 
     const BitTracker::RegisterCell &lookup(unsigned VR) {
-      unsigned RInd = TargetRegisterInfo::virtReg2Index(VR);
+      unsigned RInd = Register::virtReg2Index(VR);
       // Grow the vector to at least 32 elements.
       if (RInd >= CVect.size())
         CVect.resize(std::max(RInd+16, 32U), nullptr);
@@ -370,9 +381,11 @@ namespace {
 
   class OrderedRegisterList {
     using ListType = std::vector<unsigned>;
+    const unsigned MaxSize;
 
   public:
-    OrderedRegisterList(const RegisterOrdering &RO) : Ord(RO) {}
+    OrderedRegisterList(const RegisterOrdering &RO)
+      : MaxSize(MaxORLSize), Ord(RO) {}
 
     void insert(unsigned VR);
     void remove(unsigned VR);
@@ -428,17 +441,22 @@ namespace {
 } // end anonymous namespace
 
 void OrderedRegisterList::insert(unsigned VR) {
-  iterator L = std::lower_bound(Seq.begin(), Seq.end(), VR, Ord);
+  iterator L = llvm::lower_bound(Seq, VR, Ord);
   if (L == Seq.end())
     Seq.push_back(VR);
   else
     Seq.insert(L, VR);
+
+  unsigned S = Seq.size();
+  if (S > MaxSize)
+    Seq.resize(MaxSize);
+  assert(Seq.size() <= MaxSize);
 }
 
 void OrderedRegisterList::remove(unsigned VR) {
-  iterator L = std::lower_bound(Seq.begin(), Seq.end(), VR, Ord);
-  assert(L != Seq.end());
-  Seq.erase(L);
+  iterator L = llvm::lower_bound(Seq, VR, Ord);
+  if (L != Seq.end())
+    Seq.erase(L);
 }
 
 namespace {
@@ -593,9 +611,9 @@ void HexagonGenInsert::buildOrderingMF(RegisterOrdering &RO) const {
       for (unsigned i = 0, n = MI->getNumOperands(); i < n; ++i) {
         const MachineOperand &MO = MI->getOperand(i);
         if (MO.isReg() && MO.isDef()) {
-          unsigned R = MO.getReg();
+          Register R = MO.getReg();
           assert(MO.getSubReg() == 0 && "Unexpected subregister in definition");
-          if (TargetRegisterInfo::isVirtualRegister(R))
+          if (Register::isVirtualRegister(R))
             RO.insert(std::make_pair(R, Index++));
         }
       }
@@ -618,7 +636,7 @@ void HexagonGenInsert::buildOrderingBT(RegisterOrdering &RB,
   SortableVectorType VRs;
   for (RegisterOrdering::iterator I = RB.begin(), E = RB.end(); I != E; ++I)
     VRs.push_back(I->first);
-  std::sort(VRs.begin(), VRs.end(), LexCmp);
+  llvm::sort(VRs, LexCmp);
   // Transfer the results to the outgoing register ordering.
   for (unsigned i = 0, n = VRs.size(); i < n; ++i)
     RO.insert(std::make_pair(VRs[i], i));
@@ -711,8 +729,8 @@ void HexagonGenInsert::getInstrDefs(const MachineInstr *MI,
     const MachineOperand &MO = MI->getOperand(i);
     if (!MO.isReg() || !MO.isDef())
       continue;
-    unsigned R = MO.getReg();
-    if (!TargetRegisterInfo::isVirtualRegister(R))
+    Register R = MO.getReg();
+    if (!Register::isVirtualRegister(R))
       continue;
     Defs.insert(R);
   }
@@ -724,8 +742,8 @@ void HexagonGenInsert::getInstrUses(const MachineInstr *MI,
     const MachineOperand &MO = MI->getOperand(i);
     if (!MO.isReg() || !MO.isUse())
       continue;
-    unsigned R = MO.getReg();
-    if (!TargetRegisterInfo::isVirtualRegister(R))
+    Register R = MO.getReg();
+    if (!Register::isVirtualRegister(R))
       continue;
     Uses.insert(R);
   }
@@ -950,6 +968,9 @@ void HexagonGenInsert::collectInBlock(MachineBasicBlock *B,
           continue;
 
         findRecordInsertForms(VR, AVs);
+        // Stop if the map size is too large.
+        if (IFMap.size() > MaxIFMSize)
+          return;
       }
     }
 
@@ -1383,7 +1404,7 @@ bool HexagonGenInsert::generateInserts() {
   for (IFMapType::iterator I = IFMap.begin(), E = IFMap.end(); I != E; ++I) {
     unsigned VR = I->first;
     const TargetRegisterClass *RC = MRI->getRegClass(VR);
-    unsigned NewVR = MRI->createVirtualRegister(RC);
+    Register NewVR = MRI->createVirtualRegister(RC);
     RegMap[VR] = NewVR;
   }
 
@@ -1461,9 +1482,8 @@ bool HexagonGenInsert::removeDeadCode(MachineDomTreeNode *N) {
     for (const MachineOperand &MO : MI->operands()) {
       if (!MO.isReg() || !MO.isDef())
         continue;
-      unsigned R = MO.getReg();
-      if (!TargetRegisterInfo::isVirtualRegister(R) ||
-          !MRI->use_nodbg_empty(R)) {
+      Register R = MO.getReg();
+      if (!Register::isVirtualRegister(R) || !MRI->use_nodbg_empty(R)) {
         AllDead = false;
         break;
       }
@@ -1582,7 +1602,7 @@ bool HexagonGenInsert::runOnMachineFunction(MachineFunction &MF) {
 
     IterListType Out;
     for (IFMapType::iterator I = IFMap.begin(), E = IFMap.end(); I != E; ++I) {
-      unsigned Idx = TargetRegisterInfo::virtReg2Index(I->first);
+      unsigned Idx = Register::virtReg2Index(I->first);
       if (Idx >= Cutoff)
         Out.push_back(I);
     }

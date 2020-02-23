@@ -205,7 +205,7 @@ struct SS{
   int foo(void) {
     int comp = 1;
 
-    // CK3-DAG: call i32 @__tgt_target_teams(i64 -1, i8* @{{[^,]+}}, i32 2, i8** %{{[^,]+}}, i8** %{{[^,]+}}, i{{64|32}}* {{.+}}@{{[^,]+}}, i32 0, i32 0), i64* {{.+}}@{{[^,]+}}, i32 0, i32 0), i32 [[NT:%[^,]+]], i32 123)
+    // CK3-DAG: call i32 @__tgt_target_teams(i64 -1, i8* @{{[^,]+}}, i32 3, i8** %{{[^,]+}}, i8** %{{[^,]+}}, i{{64|32}}* %{{[^,]+}}, i64* {{.+}}@{{[^,]+}}, i32 0, i32 0), i32 [[NT:%[^,]+]], i32 123)
 
     // CK3-DAG: [[NT]] = load i32, i32* [[NTA:%[^,]+]],
     // CK3-DAG: [[NTA]] = getelementptr inbounds [[SSI]], [[SSI]]* [[NTB:%[^,]+]], i32 0, i32 0
@@ -218,7 +218,7 @@ struct SS{
       ++comp;
     }
 
-    // CK3-DAG: call i32 @__tgt_target_teams(i64 -1, i8* @{{[^,]+}}, i32 2, i8** %{{[^,]+}}, i8** %{{[^,]+}}, i{{64|32}}* {{.+}}@{{[^,]+}}, i32 0, i32 0), i64* {{.+}}@{{[^,]+}}, i32 0, i32 0), i32 456, i32 [[TL:%[^,]+]])
+    // CK3-DAG: call i32 @__tgt_target_teams(i64 -1, i8* @{{[^,]+}}, i32 3, i8** %{{[^,]+}}, i8** %{{[^,]+}}, i{{64|32}}* %{{[^,]+}}, i64* {{.+}}@{{[^,]+}}, i32 0, i32 0), i32 456, i32 [[TL:%[^,]+]])
 
     // CK3-DAG: [[TL]] = add nsw i32 [[TLA:%[^,]+]], 123
     // CK3-DAG: [[TLA]] = fptosi float [[TLB:%[^,]+]] to i32
@@ -264,9 +264,9 @@ int teams_template_struct(void) {
 
 #ifdef CK4
 
-// CK4-DAG: %ident_t = type { i32, i32, i32, i32, i8* }
+// CK4-DAG: %struct.ident_t = type { i32, i32, i32, i32, i8* }
 // CK4-DAG: [[STR:@.+]] = private unnamed_addr constant [23 x i8] c";unknown;unknown;0;0;;\00"
-// CK4-DAG: [[DEF_LOC_0:@.+]] = private unnamed_addr constant %ident_t { i32 0, i32 2, i32 0, i32 0, i8* getelementptr inbounds ([23 x i8], [23 x i8]* [[STR]], i32 0, i32 0) }
+// CK4-DAG: [[DEF_LOC_0:@.+]] = private unnamed_addr global %struct.ident_t { i32 0, i32 2, i32 0, i32 0, i8* getelementptr inbounds ([23 x i8], [23 x i8]* [[STR]], i32 0, i32 0) }
 // CK4-DEBUG-DAG: [[LOC1:@.+]] = private unnamed_addr constant [{{.+}} x i8] c";{{.*}}teams_codegen.cpp;main;[[@LINE+14]];9;;\00"
 // CK4-DEBUG-DAG: [[LOC2:@.+]] = private unnamed_addr constant [{{.+}} x i8] c";{{.*}}teams_codegen.cpp;tmain;[[@LINE+7]];9;;\00"
 
@@ -289,15 +289,15 @@ int main (int argc, char **argv) {
 // CK4:  [[ARGCADDR:%.+]] = alloca i{{.+}}
 // CK4:  store i{{.+}} %[[ARGC]], i{{.+}}* [[ARGCADDR]]
 // CK4-64:  [[CONV:%.+]] = bitcast i64* [[ARGCADDR]] to i32*
-// CK4-64:  call {{.*}}void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i32*)* {{.+}} to void (i32*, i32*, ...)*), i32* [[CONV]])
-// CK4-32:  call {{.*}}void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i32*)* {{.+}} to void (i32*, i32*, ...)*), i32* [[ARGCADDR]])
+// CK4-64:  call {{.*}}void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%struct.ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i32*)* {{.+}} to void (i32*, i32*, ...)*), i32* [[CONV]])
+// CK4-32:  call {{.*}}void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%struct.ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i32*)* {{.+}} to void (i32*, i32*, ...)*), i32* [[ARGCADDR]])
 // CK4:  ret void
 // CK4-NEXT: }
 
 // CK4:  define {{.*}}void @{{[^,]+}}(i8** [[ARGC1:%.+]])
 // CK4:  [[ARGCADDR1:%.+]] = alloca i8**
 // CK4:  store i8** [[ARGC1]], i8*** [[ARGCADDR1]]
-// CK4:  call {{.*}}void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i8***)* {{.+}} to void (i32*, i32*, ...)*), i8*** [[ARGCADDR1]])
+// CK4:  call {{.*}}void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%struct.ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i8***)* {{.+}} to void (i32*, i32*, ...)*), i8*** [[ARGCADDR1]])
 
 
 #endif // CK4
@@ -325,9 +325,9 @@ int main (int argc, char **argv) {
 // expected-no-diagnostics
 #ifdef CK5
 
-// CK5-DAG: %ident_t = type { i32, i32, i32, i32, i8* }
+// CK5-DAG: %struct.ident_t = type { i32, i32, i32, i32, i8* }
 // CK5-DAG: [[STR:@.+]] = private unnamed_addr constant [23 x i8] c";unknown;unknown;0;0;;\00"
-// CK5-DAG: [[DEF_LOC_0:@.+]] = private unnamed_addr constant %ident_t { i32 0, i32 2, i32 0, i32 0, i8* getelementptr inbounds ([23 x i8], [23 x i8]* [[STR]], i32 0, i32 0) }
+// CK5-DAG: [[DEF_LOC_0:@.+]] = private unnamed_addr global %struct.ident_t { i32 0, i32 2, i32 0, i32 0, i8* getelementptr inbounds ([23 x i8], [23 x i8]* [[STR]], i32 0, i32 0) }
 // CK5-DEBUG-DAG: [[LOC1:@.+]] = private unnamed_addr constant [{{.+}} x i8] c";{{.*}}teams_codegen.cpp;main;[[@LINE+14]];9;;\00"
 // CK5-DEBUG-DAG: [[LOC2:@.+]] = private unnamed_addr constant [{{.+}} x i8] c";{{.*}}teams_codegen.cpp;tmain;[[@LINE+7]];9;;\00"
 
@@ -358,7 +358,7 @@ int main (int argc, char **argv) {
 // CK5:  [[AADDR:%.+]] = alloca i{{.+}}
 // CK5:  [[BADDR:%.+]] = alloca i{{.+}}
 // CK5:  [[ARGCADDR:%.+]] = alloca i{{.+}}
-// CK5:  [[GBL_TH_NUM:%.+]] = call i32 @__kmpc_global_thread_num(%ident_t* [[DEF_LOC_0]])
+// CK5:  [[GBL_TH_NUM:%.+]] = call i32 @__kmpc_global_thread_num(%struct.ident_t* [[DEF_LOC_0]])
 // CK5:  store i{{.+}} [[AP]], i{{.+}}* [[AADDR]]
 // CK5:  store i{{.+}} [[BP]], i{{.+}}* [[BADDR]]
 // CK5:  store i{{.+}} [[ARGC]], i{{.+}}* [[ARGCADDR]]
@@ -369,15 +369,15 @@ int main (int argc, char **argv) {
 // CK5-64:  [[BCONVVAL:%.+]] = load i32, i32* [[BCONV]]
 // CK5-32:  [[ACONVVAL:%.+]] = load i32, i32* [[AADDR]]
 // CK5-32:  [[BCONVVAL:%.+]] = load i32, i32* [[BADDR]]
-// CK5:  {{.+}} = call i32 @__kmpc_push_num_teams(%ident_t* [[DEF_LOC_0]], i32 [[GBL_TH_NUM]], i32 [[ACONVVAL]], i32 [[BCONVVAL]])
-// CK5-64:  call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i32*)* @.omp_outlined. to void (i32*, i32*, ...)*), i32* [[CONV]])
-// CK5-32:  call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i32*)* @.omp_outlined. to void (i32*, i32*, ...)*), i32* [[ARGCADDR]])
+// CK5:  {{.+}} = call i32 @__kmpc_push_num_teams(%struct.ident_t* [[DEF_LOC_0]], i32 [[GBL_TH_NUM]], i32 [[ACONVVAL]], i32 [[BCONVVAL]])
+// CK5-64:  call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%struct.ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i32*)* @.omp_outlined. to void (i32*, i32*, ...)*), i32* [[CONV]])
+// CK5-32:  call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%struct.ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i32*)* @.omp_outlined. to void (i32*, i32*, ...)*), i32* [[ARGCADDR]])
 
 // CK5:  define {{.*}}void @{{[^,]+}}(i{{.+}} [[AP:%.+]], i{{.+}} [[BP:%.+]], i{{.+}}** [[ARGC:%.+]])
 // CK5:  [[AADDR:%.+]] = alloca i{{.+}}
 // CK5:  [[BADDR:%.+]] = alloca i{{.+}}
 // CK5:  [[ARGCADDR:%.+]] = alloca i{{.+}}**
-// CK5:  [[GBL_TH_NUM:%.+]] = call i32 @__kmpc_global_thread_num(%ident_t* [[DEF_LOC_0]])
+// CK5:  [[GBL_TH_NUM:%.+]] = call i32 @__kmpc_global_thread_num(%struct.ident_t* [[DEF_LOC_0]])
 // CK5:  store i{{.+}} [[AP]], i{{.+}}* [[AADDR]]
 // CK5:  store i{{.+}} [[BP]], i{{.+}}* [[BADDR]]
 // CK5:  store i{{.+}}** [[ARGC]], i{{.+}}*** [[ARGCADDR]]
@@ -385,13 +385,40 @@ int main (int argc, char **argv) {
 // CK5-64:  [[BCONV:%.+]] = bitcast i64* [[BADDR]] to i32*
 // CK5-64:  [[ACONVVAL:%.+]] = load i32, i32* [[ACONV]]
 // CK5-64:  [[BCONVVAL:%.+]] = load i32, i32* [[BCONV]]
-// CK5-64:  {{.+}} = call i32 @__kmpc_push_num_teams(%ident_t* [[DEF_LOC_0]], i32 [[GBL_TH_NUM]], i32 [[ACONVVAL]], i32 [[BCONVVAL]])
+// CK5-64:  {{.+}} = call i32 @__kmpc_push_num_teams(%struct.ident_t* [[DEF_LOC_0]], i32 [[GBL_TH_NUM]], i32 [[ACONVVAL]], i32 [[BCONVVAL]])
 // CK5-32:  [[A_VAL:%.+]] = load i32, i32* [[AADDR]]
 // CK5-32:  [[B_VAL:%.+]] = load i32, i32* [[BADDR]]
-// CK5-32:  {{.+}} = call i32 @__kmpc_push_num_teams(%ident_t* [[DEF_LOC_0]], i32 [[GBL_TH_NUM]], i32 [[A_VAL]], i32 [[B_VAL]])
-// CK5:  call void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i{{.+}})* @.omp_outlined.{{.+}} to void (i32*, i32*, ...)*), i{{.+}}*** [[ARGCADDR]])
+// CK5-32:  {{.+}} = call i32 @__kmpc_push_num_teams(%struct.ident_t* [[DEF_LOC_0]], i32 [[GBL_TH_NUM]], i32 [[A_VAL]], i32 [[B_VAL]])
+// CK5:  call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%struct.ident_t* [[DEF_LOC_0]], i32 1, void (i32*, i32*, ...)* bitcast (void (i32*, i32*, i{{.+}})* @.omp_outlined.{{.+}} to void (i32*, i32*, ...)*), i{{.+}}*** [[ARGCADDR]])
 // CK5:  ret void
 // CK5-NEXT: }
 
 #endif // CK5
+
+// Test host codegen.
+// RUN: %clang_cc1 -DCK6 -verify -fopenmp -fopenmp-version=50 -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -emit-llvm %s -o - | FileCheck %s --check-prefix CK6 --check-prefix CK6-64
+// RUN: %clang_cc1 -DCK6 -fopenmp -fopenmp-version=50 -x c++ -std=c++11 -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -emit-pch -o %t %s
+// RUN: %clang_cc1 -DCK6 -fopenmp-version=50 -fopenmp -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s --check-prefix CK6 --check-prefix CK6-64
+// RUN: %clang_cc1 -DCK6 -verify -fopenmp -fopenmp-version=50 -x c++ -triple i386-unknown-unknown -fopenmp-targets=i386-pc-linux-gnu -emit-llvm %s -o - | FileCheck %s --check-prefix CK6 --check-prefix CK6-32
+// RUN: %clang_cc1 -DCK6 -fopenmp -fopenmp-version=50 -x c++ -std=c++11 -triple i386-unknown-unknown -fopenmp-targets=i386-pc-linux-gnu -emit-pch -o %t %s
+// RUN: %clang_cc1 -DCK6 -fopenmp -fopenmp-version=50 -x c++ -triple i386-unknown-unknown -fopenmp-targets=i386-pc-linux-gnu -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s --check-prefix CK6 --check-prefix CK6-32
+
+// RUN: %clang_cc1 -DCK6 -verify -fopenmp-version=50 -fopenmp-simd -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -DCK6 -fopenmp-simd -fopenmp-version=50 -x c++ -std=c++11 -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -emit-pch -o %t %s
+// RUN: %clang_cc1 -DCK6 -fopenmp-simd -fopenmp-version=50 -x c++ -triple powerpc64le-unknown-unknown -fopenmp-targets=powerpc64le-ibm-linux-gnu -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -DCK6 -verify -fopenmp-simd -fopenmp-version=50 -x c++ -triple i386-unknown-unknown -fopenmp-targets=i386-pc-linux-gnu -emit-llvm %s -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// RUN: %clang_cc1 -DCK6 -fopenmp-simd -fopenmp-version=50 -x c++ -std=c++11 -triple i386-unknown-unknown -fopenmp-targets=i386-pc-linux-gnu -emit-pch -o %t %s
+// RUN: %clang_cc1 -DCK6 -fopenmp-simd -fopenmp-version=50 -x c++ -triple i386-unknown-unknown -fopenmp-targets=i386-pc-linux-gnu -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck --check-prefix SIMD-ONLY0 %s
+// SIMD-ONLY0-NOT: {{__kmpc|__tgt}}
+#ifdef CK6
+
+// CK6-LABEL: foo
+void foo() {
+  // CK6: call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_teams(%struct.ident_t* @0, i32 0, void (i32*, i32*, ...)* bitcast (void (i32*, i32*)* @{{.+}} to void (i32*, i32*, ...)*))
+#pragma omp teams
+  ;
+}
+
+#endif // CK6
+
 #endif

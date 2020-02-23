@@ -15,7 +15,7 @@ entry:
   ret i32 %call2
 }
 
-define internal i32 @wwrite(i64 %i) nounwind readnone {
+define internal i32 @wwrite(i64 %i) nounwind {
 entry:
   switch i64 %i, label %sw.default [
     i64 3, label %return
@@ -28,7 +28,3 @@ sw.default:
 return:
   ret i32 0
 }
-
-; CHECK: attributes #0 = { noreturn nounwind }
-; CHECK: attributes #1 = { nounwind readnone }
-; CHECK: attributes [[NUW]] = { nounwind }

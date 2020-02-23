@@ -117,7 +117,7 @@ entry:
   ret void, !dbg !58
 }
 
-attributes #0 = { nounwind ssp uwtable "less-precise-fpmad"="false" "no-frame-pointer-elim"="true" "no-frame-pointer-elim-non-leaf" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { nounwind ssp uwtable "less-precise-fpmad"="false" "frame-pointer"="all" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "unsafe-fp-math"="false" "use-soft-float"="false" }
 attributes #1 = { nounwind readnone }
 
 !llvm.dbg.cu = !{!0}
@@ -152,8 +152,8 @@ attributes #1 = { nounwind readnone }
 !27 = !DIDerivedType(tag: DW_TAG_pointer_type, size: 64, align: 64, baseType: !18)
 !28 = !{!29}
 !29 = !DITemplateTypeParameter(name: "T", type: !18)
-!31 = distinct !DISubprogram(name: "foo", linkageName: "_ZN1C3fooEv", line: 4, isLocal: false, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, unit: !0, scopeLine: 4, file: !1, scope: null, type: !14, declaration: !13, variables: !2)
-!32 = distinct !DISubprogram(name: "test", linkageName: "_Z4testv", line: 20, isLocal: false, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, unit: !0, scopeLine: 20, file: !1, scope: !7, type: !33, variables: !2)
+!31 = distinct !DISubprogram(name: "foo", linkageName: "_ZN1C3fooEv", line: 4, isLocal: false, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, unit: !0, scopeLine: 4, file: !1, scope: null, type: !14, declaration: !13, retainedNodes: !2)
+!32 = distinct !DISubprogram(name: "test", linkageName: "_Z4testv", line: 20, isLocal: false, isDefinition: true, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, unit: !0, scopeLine: 20, file: !1, scope: !7, type: !33, retainedNodes: !2)
 !33 = !DISubroutineType(types: !34)
 !34 = !{null}
 !35 = !{i32 2, !"Dwarf Version", i32 2}

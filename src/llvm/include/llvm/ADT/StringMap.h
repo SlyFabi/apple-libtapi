@@ -1,9 +1,8 @@
 //===- StringMap.h - String Hash table map interface ------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -37,12 +36,12 @@ template<typename ValueTy> class StringMapKeyIterator;
 
 /// StringMapEntryBase - Shared base class of StringMapEntry instances.
 class StringMapEntryBase {
-  unsigned StrLen;
+  size_t StrLen;
 
 public:
-  explicit StringMapEntryBase(unsigned Len) : StrLen(Len) {}
+  explicit StringMapEntryBase(size_t Len) : StrLen(Len) {}
 
-  unsigned getKeyLength() const { return StrLen; }
+  size_t getKeyLength() const { return StrLen; }
 };
 
 /// StringMapImpl - This is the base class of StringMap that is shared among
@@ -119,55 +118,75 @@ public:
   }
 };
 
-/// StringMapEntry - This is used to represent one value that is inserted into
-/// a StringMap.  It contains the Value itself and the key: the string length
-/// and data.
+/// StringMapEntryStorage - Holds the value in a StringMapEntry.
+///
+/// Factored out into a separate base class to make it easier to specialize.
+/// This is primarily intended to support StringSet, which doesn't need a value
+/// stored at all.
 template<typename ValueTy>
-class StringMapEntry : public StringMapEntryBase {
+class StringMapEntryStorage : public StringMapEntryBase {
 public:
   ValueTy second;
 
-  explicit StringMapEntry(unsigned strLen)
+  explicit StringMapEntryStorage(size_t strLen)
     : StringMapEntryBase(strLen), second() {}
   template <typename... InitTy>
-  StringMapEntry(unsigned strLen, InitTy &&... InitVals)
+  StringMapEntryStorage(size_t strLen, InitTy &&... InitVals)
       : StringMapEntryBase(strLen), second(std::forward<InitTy>(InitVals)...) {}
-  StringMapEntry(StringMapEntry &E) = delete;
-
-  StringRef getKey() const {
-    return StringRef(getKeyData(), getKeyLength());
-  }
+  StringMapEntryStorage(StringMapEntryStorage &E) = delete;
 
   const ValueTy &getValue() const { return second; }
   ValueTy &getValue() { return second; }
 
   void setValue(const ValueTy &V) { second = V; }
+};
+
+template<>
+class StringMapEntryStorage<NoneType> : public StringMapEntryBase {
+public:
+  explicit StringMapEntryStorage(size_t strLen, NoneType none = None)
+    : StringMapEntryBase(strLen) {}
+  StringMapEntryStorage(StringMapEntryStorage &E) = delete;
+
+  NoneType getValue() const { return None; }
+};
+
+/// StringMapEntry - This is used to represent one value that is inserted into
+/// a StringMap.  It contains the Value itself and the key: the string length
+/// and data.
+template<typename ValueTy>
+class StringMapEntry final : public StringMapEntryStorage<ValueTy> {
+public:
+  using StringMapEntryStorage<ValueTy>::StringMapEntryStorage;
+
+  StringRef getKey() const {
+    return StringRef(getKeyData(), this->getKeyLength());
+  }
 
   /// getKeyData - Return the start of the string data that is the key for this
   /// value.  The string data is always stored immediately after the
   /// StringMapEntry object.
   const char *getKeyData() const {return reinterpret_cast<const char*>(this+1);}
 
-  StringRef first() const { return StringRef(getKeyData(), getKeyLength()); }
+  StringRef first() const {
+    return StringRef(getKeyData(), this->getKeyLength());
+  }
 
   /// Create a StringMapEntry for the specified key construct the value using
   /// \p InitiVals.
   template <typename AllocatorTy, typename... InitTy>
   static StringMapEntry *Create(StringRef Key, AllocatorTy &Allocator,
                                 InitTy &&... InitVals) {
-    unsigned KeyLength = Key.size();
+    size_t KeyLength = Key.size();
 
     // Allocate a new item with space for the string at the end and a null
     // terminator.
-    unsigned AllocSize = static_cast<unsigned>(sizeof(StringMapEntry))+
-      KeyLength+1;
-    unsigned Alignment = alignof(StringMapEntry);
+    size_t AllocSize = sizeof(StringMapEntry) + KeyLength + 1;
+    size_t Alignment = alignof(StringMapEntry);
 
     StringMapEntry *NewItem =
       static_cast<StringMapEntry*>(Allocator.Allocate(AllocSize,Alignment));
-
-    if (NewItem == nullptr)
-      report_bad_alloc_error("Allocation of StringMap entry failed.");
+    assert(NewItem && "Unhandled out-of-memory");
 
     // Construct the value.
     new (NewItem) StringMapEntry(KeyLength, std::forward<InitTy>(InitVals)...);
@@ -203,8 +222,7 @@ public:
   template<typename AllocatorTy>
   void Destroy(AllocatorTy &Allocator) {
     // Free memory referenced by the item.
-    unsigned AllocSize =
-        static_cast<unsigned>(sizeof(StringMapEntry)) + getKeyLength() + 1;
+    size_t AllocSize = sizeof(StringMapEntry) + this->getKeyLength() + 1;
     this->~StringMapEntry();
     Allocator.Deallocate(static_cast<void *>(this), AllocSize);
   }
@@ -364,6 +382,11 @@ public:
     return find(Key) == end() ? 0 : 1;
   }
 
+  template <typename InputTy>
+  size_type count(const StringMapEntry<InputTy> &MapEntry) const {
+    return count(MapEntry.getKey());
+  }
+
   /// insert - Insert the specified key/value pair into the map.  If the key
   /// already exists in the map, return false and ignore the request, otherwise
   /// insert it and return true.
@@ -389,6 +412,16 @@ public:
   /// the pair points to the element with key equivalent to the key of the pair.
   std::pair<iterator, bool> insert(std::pair<StringRef, ValueTy> KV) {
     return try_emplace(KV.first, std::move(KV.second));
+  }
+
+  /// Inserts an element or assigns to the current element if the key already
+  /// exists. The return type is the same as try_emplace.
+  template <typename V>
+  std::pair<iterator, bool> insert_or_assign(StringRef Key, V &&Val) {
+    auto Ret = try_emplace(Key, std::forward<V>(Val));
+    if (!Ret.second)
+      Ret.first->second = std::forward<V>(Val);
+    return Ret;
   }
 
   /// Emplace a new element for the specified key into the map if the key isn't

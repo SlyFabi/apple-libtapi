@@ -1,9 +1,8 @@
 //===- ConstantInitBuilder.h - Builder for LLVM IR constants ----*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -26,8 +25,11 @@
 #include <vector>
 
 namespace clang {
-namespace CodeGen {
+class GlobalDecl;
+class PointerAuthSchema;
+class QualType;
 
+namespace CodeGen {
 class CodeGenModule;
 
 /// A convenience builder class for complex constant initializers,
@@ -200,6 +202,17 @@ public:
     add(llvm::ConstantInt::get(intTy, value, isSigned));
   }
 
+  /// Add a signed pointer using the given pointer authentication schema.
+  void addSignedPointer(llvm::Constant *pointer,
+                        const PointerAuthSchema &schema, GlobalDecl calleeDecl,
+                        QualType calleeType);
+
+  /// Add a signed pointer using the given pointer authentication schema.
+  void addSignedPointer(llvm::Constant *pointer,
+                        unsigned key,
+                        bool useAddressDiscrimination,
+                        llvm::Constant *otherDiscriminator);
+
   /// Add a null pointer of a specific type.
   void addNullPointer(llvm::PointerType *ptrTy) {
     add(llvm::ConstantPointerNull::get(ptrTy));
@@ -266,7 +279,7 @@ public:
   /// (2) finishing the entire builder.
   ///
   /// This is useful for emitting certain kinds of structure which
-  /// contain some sort of summary field, generaly a count, before any
+  /// contain some sort of summary field, generally a count, before any
   /// of the data.  By emitting a placeholder first, the structure can
   /// be emitted eagerly.
   PlaceholderPosition addPlaceholder() {

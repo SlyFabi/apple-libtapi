@@ -1,9 +1,8 @@
 //===-- LibCallsShrinkWrap.cpp ----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -40,6 +39,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/MDBuilder.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 using namespace llvm;
@@ -79,11 +79,11 @@ public:
   bool perform() {
     bool Changed = false;
     for (auto &CI : WorkList) {
-      DEBUG(dbgs() << "CDCE calls: " << CI->getCalledFunction()->getName()
-                   << "\n");
+      LLVM_DEBUG(dbgs() << "CDCE calls: " << CI->getCalledFunction()->getName()
+                        << "\n");
       if (perform(CI)) {
         Changed = true;
-        DEBUG(dbgs() << "Transformed\n");
+        LLVM_DEBUG(dbgs() << "Transformed\n");
       }
     }
     return Changed;
@@ -421,7 +421,7 @@ Value *LibCallsShrinkWrap::generateCondForPow(CallInst *CI,
                                               const LibFunc &Func) {
   // FIXME: LibFunc_powf and powl TBD.
   if (Func != LibFunc_pow) {
-    DEBUG(dbgs() << "Not handled powf() and powl()\n");
+    LLVM_DEBUG(dbgs() << "Not handled powf() and powl()\n");
     return nullptr;
   }
 
@@ -433,7 +433,7 @@ Value *LibCallsShrinkWrap::generateCondForPow(CallInst *CI,
   if (ConstantFP *CF = dyn_cast<ConstantFP>(Base)) {
     double D = CF->getValueAPF().convertToDouble();
     if (D < 1.0f || D > APInt::getMaxValue(8).getZExtValue()) {
-      DEBUG(dbgs() << "Not handled pow(): constant base out of range\n");
+      LLVM_DEBUG(dbgs() << "Not handled pow(): constant base out of range\n");
       return nullptr;
     }
 
@@ -447,7 +447,7 @@ Value *LibCallsShrinkWrap::generateCondForPow(CallInst *CI,
   // If the Base value coming from an integer type.
   Instruction *I = dyn_cast<Instruction>(Base);
   if (!I) {
-    DEBUG(dbgs() << "Not handled pow(): FP type base\n");
+    LLVM_DEBUG(dbgs() << "Not handled pow(): FP type base\n");
     return nullptr;
   }
   unsigned Opcode = I->getOpcode();
@@ -461,7 +461,7 @@ Value *LibCallsShrinkWrap::generateCondForPow(CallInst *CI,
     else if (BW == 32)
       UpperV = 32.0f;
     else {
-      DEBUG(dbgs() << "Not handled pow(): type too wide\n");
+      LLVM_DEBUG(dbgs() << "Not handled pow(): type too wide\n");
       return nullptr;
     }
 
@@ -477,7 +477,7 @@ Value *LibCallsShrinkWrap::generateCondForPow(CallInst *CI,
     Value *Cond0 = BBBuilder.CreateFCmp(CmpInst::FCMP_OLE, Base, V0);
     return BBBuilder.CreateOr(Cond0, Cond);
   }
-  DEBUG(dbgs() << "Not handled pow(): base not from integer convert\n");
+  LLVM_DEBUG(dbgs() << "Not handled pow(): base not from integer convert\n");
   return nullptr;
 }
 
@@ -487,7 +487,7 @@ void LibCallsShrinkWrap::shrinkWrapCI(CallInst *CI, Value *Cond) {
   MDNode *BranchWeights =
       MDBuilder(CI->getContext()).createBranchWeights(1, 2000);
 
-  TerminatorInst *NewInst =
+  Instruction *NewInst =
       SplitBlockAndInsertIfThen(Cond, CI, false, BranchWeights, DT);
   BasicBlock *CallBB = NewInst->getParent();
   CallBB->setName("cdce.call");
@@ -496,9 +496,9 @@ void LibCallsShrinkWrap::shrinkWrapCI(CallInst *CI, Value *Cond) {
   SuccBB->setName("cdce.end");
   CI->removeFromParent();
   CallBB->getInstList().insert(CallBB->getFirstInsertionPt(), CI);
-  DEBUG(dbgs() << "== Basic Block After ==");
-  DEBUG(dbgs() << *CallBB->getSinglePredecessor() << *CallBB
-               << *CallBB->getSingleSuccessor() << "\n");
+  LLVM_DEBUG(dbgs() << "== Basic Block After ==");
+  LLVM_DEBUG(dbgs() << *CallBB->getSinglePredecessor() << *CallBB
+                    << *CallBB->getSingleSuccessor() << "\n");
 }
 
 // Perform the transformation to a single candidate.
@@ -529,15 +529,12 @@ static bool runImpl(Function &F, const TargetLibraryInfo &TLI,
   bool Changed = CCDCE.perform();
 
 // Verify the dominator after we've updated it locally.
-#ifndef NDEBUG
-  if (DT)
-    DT->verifyDomTree();
-#endif
+  assert(!DT || DT->verify(DominatorTree::VerificationLevel::Fast));
   return Changed;
 }
 
 bool LibCallsShrinkWrapLegacyPass::runOnFunction(Function &F) {
-  auto &TLI = getAnalysis<TargetLibraryInfoWrapperPass>().getTLI();
+  auto &TLI = getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F);
   auto *DTWP = getAnalysisIfAvailable<DominatorTreeWrapperPass>();
   auto *DT = DTWP ? &DTWP->getDomTree() : nullptr;
   return runImpl(F, TLI, DT);

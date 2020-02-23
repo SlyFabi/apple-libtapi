@@ -1,9 +1,8 @@
 //===- CoroEarly.cpp - Coroutine Early Function Pass ----------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // This pass lowers coroutine intrinsics that hide the details of the exact
@@ -23,14 +22,16 @@ using namespace llvm;
 #define DEBUG_TYPE "coro-early"
 
 namespace {
-// Created on demand if CoroEarly pass has work to do.
+// Created on demand if the coro-early pass has work to do.
 class Lowerer : public coro::LowererBase {
   IRBuilder<> Builder;
   PointerType *const AnyResumeFnPtrTy;
+  Constant *NoopCoro = nullptr;
 
   void lowerResumeOrDestroy(CallSite CS, CoroSubFnInst::ResumeKind);
   void lowerCoroPromise(CoroPromiseInst *Intrin);
   void lowerCoroDone(IntrinsicInst *II);
+  void lowerCoroNoop(IntrinsicInst *II);
 
 public:
   Lowerer(Module &M)
@@ -104,6 +105,41 @@ void Lowerer::lowerCoroDone(IntrinsicInst *II) {
   II->eraseFromParent();
 }
 
+void Lowerer::lowerCoroNoop(IntrinsicInst *II) {
+  if (!NoopCoro) {
+    LLVMContext &C = Builder.getContext();
+    Module &M = *II->getModule();
+
+    // Create a noop.frame struct type.
+    StructType *FrameTy = StructType::create(C, "NoopCoro.Frame");
+    auto *FramePtrTy = FrameTy->getPointerTo();
+    auto *FnTy = FunctionType::get(Type::getVoidTy(C), FramePtrTy,
+                                   /*isVarArg=*/false);
+    auto *FnPtrTy = FnTy->getPointerTo();
+    FrameTy->setBody({FnPtrTy, FnPtrTy});
+
+    // Create a Noop function that does nothing.
+    Function *NoopFn =
+        Function::Create(FnTy, GlobalValue::LinkageTypes::PrivateLinkage,
+                         "NoopCoro.ResumeDestroy", &M);
+    NoopFn->setCallingConv(CallingConv::Fast);
+    auto *Entry = BasicBlock::Create(C, "entry", NoopFn);
+    ReturnInst::Create(C, Entry);
+
+    // Create a constant struct for the frame.
+    Constant* Values[] = {NoopFn, NoopFn};
+    Constant* NoopCoroConst = ConstantStruct::get(FrameTy, Values);
+    NoopCoro = new GlobalVariable(M, NoopCoroConst->getType(), /*isConstant=*/true,
+                                GlobalVariable::PrivateLinkage, NoopCoroConst,
+                                "NoopCoro.Frame.Const");
+  }
+
+  Builder.SetInsertPoint(II);
+  auto *NoopCoroVoidPtr = Builder.CreateBitCast(NoopCoro, Int8Ptr);
+  II->replaceAllUsesWith(NoopCoroVoidPtr);
+  II->eraseFromParent();
+}
+
 // Prior to CoroSplit, calls to coro.begin needs to be marked as NoDuplicate,
 // as CoroSplit assumes there is exactly one coro.begin. After CoroSplit,
 // NoDuplicate attribute will be removed from coro.begin otherwise, it will
@@ -138,6 +174,9 @@ bool Lowerer::lowerEarlyIntrinsics(Function &F) {
         // pass expects that there is at most one fallthrough coro.end.
         if (cast<CoroEndInst>(&I)->isFallthrough())
           CS.setCannotDuplicate();
+        break;
+      case Intrinsic::coro_noop:
+        lowerCoroNoop(cast<IntrinsicInst>(&I));
         break;
       case Intrinsic::coro_id:
         // Mark a function that comes out of the frontend that has a coro.id
@@ -186,10 +225,10 @@ bool Lowerer::lowerEarlyIntrinsics(Function &F) {
 
 namespace {
 
-struct CoroEarly : public FunctionPass {
+struct CoroEarlyLegacy : public FunctionPass {
   static char ID; // Pass identification, replacement for typeid.
-  CoroEarly() : FunctionPass(ID) {
-    initializeCoroEarlyPass(*PassRegistry::getPassRegistry());
+  CoroEarlyLegacy() : FunctionPass(ID) {
+    initializeCoroEarlyLegacyPass(*PassRegistry::getPassRegistry());
   }
 
   std::unique_ptr<Lowerer> L;
@@ -197,13 +236,18 @@ struct CoroEarly : public FunctionPass {
   // This pass has work to do only if we find intrinsics we are going to lower
   // in the module.
   bool doInitialization(Module &M) override {
-    if (coro::declaresIntrinsics(M, {"llvm.coro.id", "llvm.coro.id.retcon",
+    if (coro::declaresIntrinsics(M, {"llvm.coro.id",
+                                     "llvm.coro.id.retcon",
                                      "llvm.coro.id.retcon.once",
                                      "llvm.coro.destroy",
-                                     "llvm.coro.done", "llvm.coro.end",
-                                     "llvm.coro.free", "llvm.coro.promise",
-                                     "llvm.coro.resume", "llvm.coro.suspend"}))
-      L = llvm::make_unique<Lowerer>(M);
+                                     "llvm.coro.done",
+                                     "llvm.coro.end",
+                                     "llvm.coro.noop", 
+                                     "llvm.coro.free",
+                                     "llvm.coro.promise",
+                                     "llvm.coro.resume",
+                                     "llvm.coro.suspend"}))
+      L = std::make_unique<Lowerer>(M);
     return false;
   }
 
@@ -223,8 +267,8 @@ struct CoroEarly : public FunctionPass {
 };
 }
 
-char CoroEarly::ID = 0;
-INITIALIZE_PASS(CoroEarly, "coro-early", "Lower early coroutine intrinsics",
-                false, false)
+char CoroEarlyLegacy::ID = 0;
+INITIALIZE_PASS(CoroEarlyLegacy, "coro-early",
+                "Lower early coroutine intrinsics", false, false)
 
-Pass *llvm::createCoroEarlyPass() { return new CoroEarly(); }
+Pass *llvm::createCoroEarlyLegacyPass() { return new CoroEarlyLegacy(); }

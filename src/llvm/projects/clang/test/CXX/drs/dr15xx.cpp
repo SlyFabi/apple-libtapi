@@ -112,9 +112,9 @@ namespace dr1512 { // dr1512: 4
 #endif
   }
 
-  template<typename T> struct Wrap { operator T(); };
-  void test_overload() {
 #if __cplusplus >= 201103L
+  template<typename T> struct Wrap { operator T(); }; // expected-note 4{{converted to type 'nullptr_t'}} expected-note 4{{converted to type 'int *'}}
+  void test_overload() {
     using nullptr_t = decltype(nullptr);
     void(Wrap<nullptr_t>() == Wrap<nullptr_t>());
     void(Wrap<nullptr_t>() != Wrap<nullptr_t>());
@@ -123,16 +123,16 @@ namespace dr1512 { // dr1512: 4
     void(Wrap<nullptr_t>() <= Wrap<nullptr_t>()); // expected-error {{invalid operands}}
     void(Wrap<nullptr_t>() >= Wrap<nullptr_t>()); // expected-error {{invalid operands}}
 
-    // The wording change fails to actually disallow this. This is valid
-    // via the builtin operator<(int*, int*) etc.
+    // Under dr1213, this is ill-formed: we select the builtin operator<(int*, int*)
+    // but then only convert as far as 'nullptr_t', which we then can't convert to 'int*'.
     void(Wrap<nullptr_t>() == Wrap<int*>());
     void(Wrap<nullptr_t>() != Wrap<int*>());
-    void(Wrap<nullptr_t>() < Wrap<int*>());
-    void(Wrap<nullptr_t>() > Wrap<int*>());
-    void(Wrap<nullptr_t>() <= Wrap<int*>());
-    void(Wrap<nullptr_t>() >= Wrap<int*>());
-#endif
+    void(Wrap<nullptr_t>() < Wrap<int*>()); // expected-error {{invalid operands to binary expression ('Wrap<nullptr_t>' and 'Wrap<int *>')}}
+    void(Wrap<nullptr_t>() > Wrap<int*>()); // expected-error {{invalid operands}}
+    void(Wrap<nullptr_t>() <= Wrap<int*>()); // expected-error {{invalid operands}}
+    void(Wrap<nullptr_t>() >= Wrap<int*>()); // expected-error {{invalid operands}}
   }
+#endif
 }
 
 namespace dr1518 { // dr1518: 4
@@ -234,6 +234,16 @@ namespace dr1560 { // dr1560: 3.5
   class X { X(const X&); };
   const X &get();
   const X &x = true ? get() : throw 0;
+}
+
+namespace dr1563 { // dr1563: yes
+#if __cplusplus >= 201103L
+  double bar(double) { return 0.0; }
+  float bar(float) { return 0.0f; }
+
+  using fun = double(double);
+  fun &foo{bar}; // ok
+#endif
 }
 
 namespace dr1573 { // dr1573: 3.9
@@ -357,6 +367,19 @@ auto DR1579_lambda_invalid = []() -> GenericMoveOnly<char> {
 };
 } // end namespace dr1579
 
+namespace dr1584 {
+  // Deducing function types from cv-qualified types
+  template<typename T> void f(const T *); // expected-note {{candidate template ignored}}
+  template<typename T> void g(T *, const T * = 0);
+  template<typename T> void h(T *) { T::error; } // expected-error {{no members}}
+  template<typename T> void h(const T *);
+  void i() {
+    f(&i); // expected-error {{no matching function}}
+    g(&i);
+    h(&i); // expected-note {{here}}
+  }
+}
+
 namespace dr1589 {   // dr1589: 3.7 c++11
   // Ambiguous ranking of list-initialization sequences
 
@@ -376,23 +399,20 @@ namespace dr1589 {   // dr1589: 3.7 c++11
   void g2() { f2({"foo","bar"}); }              // chooses #4
 
   namespace with_error {
-    void f0(long);                        // #0    expected-note {{candidate function}}
-    void f0(std::initializer_list<int>);  // #00   expected-note {{candidate function}}
-    void f0(std::initializer_list<int>, int = 0);  // Makes selection of #00 ambiguous \
-    // expected-note {{candidate function}}
-    void g0() { f0({1L}); }                 // chooses #00    expected-error{{call to 'f0' is ambiguous}}
+    void f0(long);                        // #0
+    void f0(std::initializer_list<int>);  // #00     expected-note {{candidate function}}
+    void f0(std::initializer_list<int>, int = 0); // expected-note {{candidate function}}
+    void g0() { f0({1L}); }                 // expected-error{{call to 'f0' is ambiguous}}
 
-    void f1(int);                           // #1   expected-note {{candidate function}}
-    void f1(std::initializer_list<long>);   // #2   expected-note {{candidate function}}
-    void f1(std::initializer_list<long>, int = 0);   // Makes selection of #00 ambiguous \
-    // expected-note {{candidate function}}
-    void g1() { f1({42}); }                 // chooses #2   expected-error{{call to 'f1' is ambiguous}}
+    void f1(int);                           // #1
+    void f1(std::initializer_list<long>);   // #2     expected-note {{candidate function}}
+    void f1(std::initializer_list<long>, int = 0); // expected-note {{candidate function}}
+    void g1() { f1({42}); }                 // expected-error{{call to 'f1' is ambiguous}}
 
-    void f2(std::pair<const char*, const char*>); // #3   TODO: expected- note {{candidate function}}
-    void f2(std::initializer_list<std::string>);  // #4   expected-note {{candidate function}}
-    void f2(std::initializer_list<std::string>, int = 0);   // Makes selection of #00 ambiguous \
-    // expected-note {{candidate function}}
-    void g2() { f2({"foo","bar"}); }        // chooses #4   expected-error{{call to 'f2' is ambiguous}}
+    void f2(std::pair<const char*, const char*>); // #3
+    void f2(std::initializer_list<std::string>);  // #4      expected-note {{candidate function}}
+    void f2(std::initializer_list<std::string>, int = 0); // expected-note {{candidate function}}
+    void g2() { f2({"foo","bar"}); }        // expected-error{{call to 'f2' is ambiguous}}
   }
 
 } // dr1589

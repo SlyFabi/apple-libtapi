@@ -49,7 +49,7 @@ entry:
 ; Function Attrs: nounwind readnone
 declare void @llvm.dbg.declare(metadata, metadata, metadata) #1
 
-attributes #0 = { nounwind uwtable "less-precise-fpmad"="false" "no-frame-pointer-elim"="true" "no-frame-pointer-elim-non-leaf" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { nounwind uwtable "less-precise-fpmad"="false" "frame-pointer"="all" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "unsafe-fp-math"="false" "use-soft-float"="false" }
 attributes #1 = { nounwind readnone }
 
 !llvm.dbg.cu = !{!8}
@@ -72,7 +72,7 @@ attributes #1 = { nounwind readnone }
 !14 = !{!0}
 !15 = !{i32 2, !"Dwarf Version", i32 3}
 !16 = !{i32 1, !"Debug Info Version", i32 3}
-!17 = distinct !DISubprogram(name: "func", linkageName: "_Z4funcv", scope: !2, file: !2, line: 3, type: !18, isLocal: false, isDefinition: true, scopeLine: 3, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, unit: !8, variables: !13)
+!17 = distinct !DISubprogram(name: "func", linkageName: "_Z4funcv", scope: !2, file: !2, line: 3, type: !18, isLocal: false, isDefinition: true, scopeLine: 3, virtualIndex: 6, flags: DIFlagPrototyped, isOptimized: false, unit: !8, retainedNodes: !13)
 !18 = !DISubroutineType(types: !19)
 !19 = !{null}
 !20 = !DILocalVariable(name: "b", scope: !17, file: !2, line: 4, type: !21)

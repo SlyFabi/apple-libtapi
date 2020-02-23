@@ -346,8 +346,7 @@ define i32 @test30(i1 %X) {
 
 define i32 @test31(i1 %X) {
 ; CHECK-LABEL: @test31(
-; CHECK-NEXT:    [[Y:%.*]] = zext i1 %X to i32
-; CHECK-NEXT:    [[Z:%.*]] = shl nuw nsw i32 [[Y]], 4
+; CHECK-NEXT:    [[Z:%.*]] = select i1 [[X:%.*]], i32 16, i32 0
 ; CHECK-NEXT:    ret i32 [[Z]]
 ;
   %Y = zext i1 %X to i32
@@ -366,6 +365,23 @@ define <2 x i32> @and_demanded_bits_splat_vec(<2 x i32> %x) {
   %y = add <2 x i32> %x, <i32 8, i32 8>
   %z = and <2 x i32> %y, <i32 7, i32 7>
   ret <2 x i32> %z
+}
+
+; zext (x >> 8) has all zeros in the high 24-bits:  0x000000xx
+; (y | 255) has all ones in the low 8-bits: 0xyyyyyyff
+; 'and' of those is all known bits - it's just 'z'.
+
+define i32 @and_zext_demanded(i16 %x, i32 %y) {
+; CHECK-LABEL: @and_zext_demanded(
+; CHECK-NEXT:    [[S:%.*]] = lshr i16 %x, 8
+; CHECK-NEXT:    [[Z:%.*]] = zext i16 [[S]] to i32
+; CHECK-NEXT:    ret i32 [[Z]]
+;
+  %s = lshr i16 %x, 8
+  %z = zext i16 %s to i32
+  %o = or i32 %y, 255
+  %a = and i32 %o, %z
+  ret i32 %a
 }
 
 define i32 @test32(i32 %In) {

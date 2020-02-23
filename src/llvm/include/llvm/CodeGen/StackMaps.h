@@ -1,9 +1,8 @@
 //===- StackMaps.h - StackMaps ----------------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,7 +28,7 @@ class MCStreamer;
 class raw_ostream;
 class TargetRegisterInfo;
 
-/// \brief MI-level stackmap operands.
+/// MI-level stackmap operands.
 ///
 /// MI stackmap operations take the form:
 /// <id>, <numBytes>, live args...
@@ -60,7 +59,7 @@ public:
   }
 };
 
-/// \brief MI-level patchpoint operands.
+/// MI-level patchpoint operands.
 ///
 /// MI patchpoint operations take the form:
 /// [<def>], <id>, <numBytes>, <target>, <numArgs>, <cc>, ...
@@ -137,7 +136,7 @@ public:
     return getVarIdx();
   }
 
-  /// \brief Get the next scratch register operand index.
+  /// Get the next scratch register operand index.
   unsigned getNextScratchIdx(unsigned StartIdx = 0) const;
 };
 
@@ -156,7 +155,7 @@ class StatepointOpers {
   // TODO:: we should change the STATEPOINT representation so that CC and
   // Flags should be part of meta operands, with args and deopt operands, and
   // gc operands all prefixed by their length and a type code. This would be
-  // much more consistent. 
+  // much more consistent.
 public:
   // These values are aboolute offsets into the operands of the statepoint
   // instruction.
@@ -236,25 +235,6 @@ public:
     FnInfos.clear();
   }
 
-  /// \brief Generate a stackmap record for a stackmap instruction.
-  ///
-  /// MI must be a raw STACKMAP, not a PATCHPOINT.
-  void recordStackMap(const MachineInstr &MI);
-
-  /// \brief Generate a stackmap record for a patchpoint instruction.
-  void recordPatchPoint(const MachineInstr &MI);
-
-  /// \brief Generate a stackmap record for a statepoint instruction.
-  void recordStatepoint(const MachineInstr &MI);
-
-  /// If there is any stack map data, create a stack map section and serialize
-  /// the map info into it. This clears the stack map data structures
-  /// afterwards.
-  void serializeToStackMapSection();
-
-private:
-  static const char *WSMP;
-
   using LocationVec = SmallVector<Location, 8>;
   using LiveOutVec = SmallVector<LiveOutReg, 8>;
   using ConstantPool = MapVector<uint64_t, uint64_t>;
@@ -283,6 +263,34 @@ private:
   using FnInfoMap = MapVector<const MCSymbol *, FunctionInfo>;
   using CallsiteInfoList = std::vector<CallsiteInfo>;
 
+  /// Generate a stackmap record for a stackmap instruction.
+  ///
+  /// MI must be a raw STACKMAP, not a PATCHPOINT.
+  void recordStackMap(const MCSymbol &L,
+                      const MachineInstr &MI);
+
+  /// Generate a stackmap record for a patchpoint instruction.
+  void recordPatchPoint(const MCSymbol &L,
+                        const MachineInstr &MI);
+
+  /// Generate a stackmap record for a statepoint instruction.
+  void recordStatepoint(const MCSymbol &L,
+                        const MachineInstr &MI);
+
+  /// If there is any stack map data, create a stack map section and serialize
+  /// the map info into it. This clears the stack map data structures
+  /// afterwards.
+  void serializeToStackMapSection();
+
+  /// Get call site info.
+  CallsiteInfoList &getCSInfos() { return CSInfos; }
+
+  /// Get function info.
+  FnInfoMap &getFnInfos() { return FnInfos; }
+
+private:
+  static const char *WSMP;
+
   AsmPrinter &AP;
   CallsiteInfoList CSInfos;
   ConstantPool ConstPool;
@@ -293,34 +301,37 @@ private:
                MachineInstr::const_mop_iterator MOE, LocationVec &Locs,
                LiveOutVec &LiveOuts) const;
 
-  /// \brief Create a live-out register record for the given register @p Reg.
+  /// Create a live-out register record for the given register @p Reg.
   LiveOutReg createLiveOutReg(unsigned Reg,
                               const TargetRegisterInfo *TRI) const;
 
-  /// \brief Parse the register live-out mask and return a vector of live-out
+  /// Parse the register live-out mask and return a vector of live-out
   /// registers that need to be recorded in the stackmap.
   LiveOutVec parseRegisterLiveOutMask(const uint32_t *Mask) const;
 
-  /// This should be called by the MC lowering code _immediately_ before
-  /// lowering the MI to an MCInst. It records where the operands for the
-  /// instruction are stored, and outputs a label to record the offset of
-  /// the call from the start of the text section. In special cases (e.g. AnyReg
-  /// calling convention) the return register is also recorded if requested.
-  void recordStackMapOpers(const MachineInstr &MI, uint64_t ID,
+  /// Record the locations of the operands of the provided instruction in a
+  /// record keyed by the provided label.  For instructions w/AnyReg calling
+  /// convention the return register is also recorded if requested.  For
+  /// STACKMAP, and PATCHPOINT the label is expected to immediately *preceed*
+  /// lowering of the MI to MCInsts.  For STATEPOINT, it expected to
+  /// immediately *follow*.  It's not clear this difference was intentional,
+  /// but it exists today.  
+  void recordStackMapOpers(const MCSymbol &L,
+                           const MachineInstr &MI, uint64_t ID,
                            MachineInstr::const_mop_iterator MOI,
                            MachineInstr::const_mop_iterator MOE,
                            bool recordResult = false);
 
-  /// \brief Emit the stackmap header.
+  /// Emit the stackmap header.
   void emitStackmapHeader(MCStreamer &OS);
 
-  /// \brief Emit the function frame record for each function.
+  /// Emit the function frame record for each function.
   void emitFunctionFrameRecords(MCStreamer &OS);
 
-  /// \brief Emit the constant pool.
+  /// Emit the constant pool.
   void emitConstantPoolEntries(MCStreamer &OS);
 
-  /// \brief Emit the callsite info for each stackmap/patchpoint intrinsic call.
+  /// Emit the callsite info for each stackmap/patchpoint intrinsic call.
   void emitCallsiteEntries(MCStreamer &OS);
 
   void print(raw_ostream &OS);

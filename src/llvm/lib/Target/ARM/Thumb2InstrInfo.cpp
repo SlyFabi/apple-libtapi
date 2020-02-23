@@ -1,9 +1,8 @@
 //===- Thumb2InstrInfo.cpp - Thumb-2 Instruction Information --------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -82,7 +81,7 @@ Thumb2InstrInfo::ReplaceTailWithBranchTo(MachineBasicBlock::iterator Tail,
     MachineBasicBlock::iterator E = MBB->begin();
     unsigned Count = 4; // At most 4 instructions in an IT block.
     while (Count && MBBI != E) {
-      if (MBBI->isDebugValue()) {
+      if (MBBI->isDebugInstr()) {
         --MBBI;
         continue;
       }
@@ -109,7 +108,7 @@ Thumb2InstrInfo::ReplaceTailWithBranchTo(MachineBasicBlock::iterator Tail,
 bool
 Thumb2InstrInfo::isLegalToSplitMBBAt(MachineBasicBlock &MBB,
                                      MachineBasicBlock::iterator MBBI) const {
-  while (MBBI->isDebugValue()) {
+  while (MBBI->isDebugInstr()) {
     ++MBBI;
     if (MBBI == MBB.end())
       return false;
@@ -121,8 +120,8 @@ Thumb2InstrInfo::isLegalToSplitMBBAt(MachineBasicBlock &MBB,
 
 void Thumb2InstrInfo::copyPhysReg(MachineBasicBlock &MBB,
                                   MachineBasicBlock::iterator I,
-                                  const DebugLoc &DL, unsigned DestReg,
-                                  unsigned SrcReg, bool KillSrc) const {
+                                  const DebugLoc &DL, MCRegister DestReg,
+                                  MCRegister SrcReg, bool KillSrc) const {
   // Handle SPR, DPR, and QPR copies.
   if (!ARM::GPRRegClass.contains(DestReg, SrcReg))
     return ARMBaseInstrInfo::copyPhysReg(MBB, I, DL, DestReg, SrcReg, KillSrc);
@@ -146,9 +145,7 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
       MachinePointerInfo::getFixedStack(MF, FI), MachineMemOperand::MOStore,
       MFI.getObjectSize(FI), MFI.getObjectAlignment(FI));
 
-  if (RC == &ARM::GPRRegClass   || RC == &ARM::tGPRRegClass ||
-      RC == &ARM::tcGPRRegClass || RC == &ARM::rGPRRegClass ||
-      RC == &ARM::GPRnopcRegClass) {
+  if (ARM::GPRRegClass.hasSubClassEq(RC)) {
     BuildMI(MBB, I, DL, get(ARM::t2STRi12))
         .addReg(SrcReg, getKillRegState(isKill))
         .addFrameIndex(FI)
@@ -162,9 +159,9 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
     // Thumb2 STRD expects its dest-registers to be in rGPR. Not a problem for
     // gsub_0, but needs an extra constraint for gsub_1 (which could be sp
     // otherwise).
-    if (TargetRegisterInfo::isVirtualRegister(SrcReg)) {
+    if (Register::isVirtualRegister(SrcReg)) {
       MachineRegisterInfo *MRI = &MF.getRegInfo();
-      MRI->constrainRegClass(SrcReg, &ARM::GPRPair_with_gsub_1_in_rGPRRegClass);
+      MRI->constrainRegClass(SrcReg, &ARM::GPRPairnospRegClass);
     }
 
     MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::t2STRDi8));
@@ -190,9 +187,7 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
   DebugLoc DL;
   if (I != MBB.end()) DL = I->getDebugLoc();
 
-  if (RC == &ARM::GPRRegClass   || RC == &ARM::tGPRRegClass ||
-      RC == &ARM::tcGPRRegClass || RC == &ARM::rGPRRegClass ||
-      RC == &ARM::GPRnopcRegClass) {
+  if (ARM::GPRRegClass.hasSubClassEq(RC)) {
     BuildMI(MBB, I, DL, get(ARM::t2LDRi12), DestReg)
         .addFrameIndex(FI)
         .addImm(0)
@@ -205,10 +200,9 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
     // Thumb2 LDRD expects its dest-registers to be in rGPR. Not a problem for
     // gsub_0, but needs an extra constraint for gsub_1 (which could be sp
     // otherwise).
-    if (TargetRegisterInfo::isVirtualRegister(DestReg)) {
+    if (Register::isVirtualRegister(DestReg)) {
       MachineRegisterInfo *MRI = &MF.getRegInfo();
-      MRI->constrainRegClass(DestReg,
-                             &ARM::GPRPair_with_gsub_1_in_rGPRRegClass);
+      MRI->constrainRegClass(DestReg, &ARM::GPRPairnospRegClass);
     }
 
     MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::t2LDRDi8));
@@ -216,7 +210,7 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
     AddDReg(MIB, DestReg, ARM::gsub_1, RegState::DefineNoRead, TRI);
     MIB.addFrameIndex(FI).addImm(0).addMemOperand(MMO).add(predOps(ARMCC::AL));
 
-    if (TargetRegisterInfo::isPhysicalRegister(DestReg))
+    if (Register::isPhysicalRegister(DestReg))
       MIB.addReg(DestReg, RegState::ImplicitDefine);
     return;
   }
@@ -309,50 +303,41 @@ void llvm::emitT2RegPlusImmediate(MachineBasicBlock &MBB,
       continue;
     }
 
-    bool HasCCOut = true;
-    if (BaseReg == ARM::SP) {
-      // sub sp, sp, #imm7
-      if (DestReg == ARM::SP && (ThisVal < ((1 << 7)-1) * 4)) {
-        assert((ThisVal & 3) == 0 && "Stack update is not multiple of 4?");
-        Opc = isSub ? ARM::tSUBspi : ARM::tADDspi;
-        BuildMI(MBB, MBBI, dl, TII.get(Opc), DestReg)
-            .addReg(BaseReg)
-            .addImm(ThisVal / 4)
-            .setMIFlags(MIFlags)
-            .add(predOps(ARMCC::AL));
-        NumBytes = 0;
-        continue;
-      }
+    assert((DestReg != ARM::SP || BaseReg == ARM::SP) &&
+           "Writing to SP, from other register.");
 
-      // sub rd, sp, so_imm
-      Opc = isSub ? ARM::t2SUBri : ARM::t2ADDri;
-      if (ARM_AM::getT2SOImmVal(NumBytes) != -1) {
-        NumBytes = 0;
-      } else {
-        // FIXME: Move this to ARMAddressingModes.h?
-        unsigned RotAmt = countLeadingZeros(ThisVal);
-        ThisVal = ThisVal & ARM_AM::rotr32(0xff000000U, RotAmt);
-        NumBytes &= ~ThisVal;
-        assert(ARM_AM::getT2SOImmVal(ThisVal) != -1 &&
-               "Bit extraction didn't work?");
-      }
+    // Try to use T1, as it smaller
+    if ((DestReg == ARM::SP) && (ThisVal < ((1 << 7) - 1) * 4)) {
+      assert((ThisVal & 3) == 0 && "Stack update is not multiple of 4?");
+      Opc = isSub ? ARM::tSUBspi : ARM::tADDspi;
+      BuildMI(MBB, MBBI, dl, TII.get(Opc), DestReg)
+          .addReg(BaseReg)
+          .addImm(ThisVal / 4)
+          .setMIFlags(MIFlags)
+          .add(predOps(ARMCC::AL));
+      break;
+    }
+    bool HasCCOut = true;
+    int ImmIsT2SO = ARM_AM::getT2SOImmVal(ThisVal);
+
+    Opc = isSub ? ARM::t2SUBri : ARM::t2ADDri;
+    // Prefer T2: sub rd, rn, so_imm | sub sp, sp, so_imm
+    if (ImmIsT2SO != -1) {
+      NumBytes = 0;
+    } else if (ThisVal < 4096) {
+      // Prefer T3 if can make it in a single go: subw rd, rn, imm12 | subw sp,
+      // sp, imm12
+      Opc = isSub ? ARM::t2SUBri12 : ARM::t2ADDri12;
+      HasCCOut = false;
+      NumBytes = 0;
     } else {
-      assert(DestReg != ARM::SP && BaseReg != ARM::SP);
-      Opc = isSub ? ARM::t2SUBri : ARM::t2ADDri;
-      if (ARM_AM::getT2SOImmVal(NumBytes) != -1) {
-        NumBytes = 0;
-      } else if (ThisVal < 4096) {
-        Opc = isSub ? ARM::t2SUBri12 : ARM::t2ADDri12;
-        HasCCOut = false;
-        NumBytes = 0;
-      } else {
-        // FIXME: Move this to ARMAddressingModes.h?
-        unsigned RotAmt = countLeadingZeros(ThisVal);
-        ThisVal = ThisVal & ARM_AM::rotr32(0xff000000U, RotAmt);
-        NumBytes &= ~ThisVal;
-        assert(ARM_AM::getT2SOImmVal(ThisVal) != -1 &&
-               "Bit extraction didn't work?");
-      }
+      // Use one T2 instruction to reduce NumBytes
+      // FIXME: Move this to ARMAddressingModes.h?
+      unsigned RotAmt = countLeadingZeros(ThisVal);
+      ThisVal = ThisVal & ARM_AM::rotr32(0xff000000U, RotAmt);
+      NumBytes &= ~ThisVal;
+      assert(ARM_AM::getT2SOImmVal(ThisVal) != -1 &&
+             "Bit extraction didn't work?");
     }
 
     // Build the new ADD / SUB.
@@ -381,6 +366,8 @@ negativeOffsetOpcode(unsigned opcode)
   case ARM::t2STRBi12:  return ARM::t2STRBi8;
   case ARM::t2STRHi12:  return ARM::t2STRHi8;
   case ARM::t2PLDi12:   return ARM::t2PLDi8;
+  case ARM::t2PLDWi12:  return ARM::t2PLDWi8;
+  case ARM::t2PLIi12:   return ARM::t2PLIi8;
 
   case ARM::t2LDRi8:
   case ARM::t2LDRHi8:
@@ -391,13 +378,13 @@ negativeOffsetOpcode(unsigned opcode)
   case ARM::t2STRBi8:
   case ARM::t2STRHi8:
   case ARM::t2PLDi8:
+  case ARM::t2PLDWi8:
+  case ARM::t2PLIi8:
     return opcode;
 
   default:
-    break;
+    llvm_unreachable("unknown thumb2 opcode.");
   }
-
-  return 0;
 }
 
 static unsigned
@@ -413,6 +400,8 @@ positiveOffsetOpcode(unsigned opcode)
   case ARM::t2STRBi8:  return ARM::t2STRBi12;
   case ARM::t2STRHi8:  return ARM::t2STRHi12;
   case ARM::t2PLDi8:   return ARM::t2PLDi12;
+  case ARM::t2PLDWi8:  return ARM::t2PLDWi12;
+  case ARM::t2PLIi8:   return ARM::t2PLIi12;
 
   case ARM::t2LDRi12:
   case ARM::t2LDRHi12:
@@ -423,13 +412,13 @@ positiveOffsetOpcode(unsigned opcode)
   case ARM::t2STRBi12:
   case ARM::t2STRHi12:
   case ARM::t2PLDi12:
+  case ARM::t2PLDWi12:
+  case ARM::t2PLIi12:
     return opcode;
 
   default:
-    break;
+    llvm_unreachable("unknown thumb2 opcode.");
   }
-
-  return 0;
 }
 
 static unsigned
@@ -445,6 +434,8 @@ immediateOffsetOpcode(unsigned opcode)
   case ARM::t2STRBs:  return ARM::t2STRBi12;
   case ARM::t2STRHs:  return ARM::t2STRHi12;
   case ARM::t2PLDs:   return ARM::t2PLDi12;
+  case ARM::t2PLDWs:  return ARM::t2PLDWi12;
+  case ARM::t2PLIs:   return ARM::t2PLIi12;
 
   case ARM::t2LDRi12:
   case ARM::t2LDRHi12:
@@ -455,6 +446,8 @@ immediateOffsetOpcode(unsigned opcode)
   case ARM::t2STRBi12:
   case ARM::t2STRHi12:
   case ARM::t2PLDi12:
+  case ARM::t2PLDWi12:
+  case ARM::t2PLIi12:
   case ARM::t2LDRi8:
   case ARM::t2LDRHi8:
   case ARM::t2LDRBi8:
@@ -464,32 +457,38 @@ immediateOffsetOpcode(unsigned opcode)
   case ARM::t2STRBi8:
   case ARM::t2STRHi8:
   case ARM::t2PLDi8:
+  case ARM::t2PLDWi8:
+  case ARM::t2PLIi8:
     return opcode;
 
   default:
-    break;
+    llvm_unreachable("unknown thumb2 opcode.");
   }
-
-  return 0;
 }
 
 bool llvm::rewriteT2FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
                                unsigned FrameReg, int &Offset,
-                               const ARMBaseInstrInfo &TII) {
+                               const ARMBaseInstrInfo &TII,
+                               const TargetRegisterInfo *TRI) {
   unsigned Opcode = MI.getOpcode();
   const MCInstrDesc &Desc = MI.getDesc();
   unsigned AddrMode = (Desc.TSFlags & ARMII::AddrModeMask);
   bool isSub = false;
 
+  MachineFunction &MF = *MI.getParent()->getParent();
+  const TargetRegisterClass *RegClass =
+      TII.getRegClass(Desc, FrameRegIdx, TRI, MF);
+
   // Memory operands in inline assembly always use AddrModeT2_i12.
-  if (Opcode == ARM::INLINEASM)
+  if (Opcode == ARM::INLINEASM || Opcode == ARM::INLINEASM_BR)
     AddrMode = ARMII::AddrModeT2_i12; // FIXME. mode for thumb2?
 
   if (Opcode == ARM::t2ADDri || Opcode == ARM::t2ADDri12) {
     Offset += MI.getOperand(FrameRegIdx+1).getImm();
 
     unsigned PredReg;
-    if (Offset == 0 && getInstrPredicate(MI, PredReg) == ARMCC::AL) {
+    if (Offset == 0 && getInstrPredicate(MI, PredReg) == ARMCC::AL &&
+        !MI.definesRegister(ARM::CPSR)) {
       // Turn it into a move.
       MI.setDesc(TII.get(ARM::tMOVr));
       MI.getOperand(FrameRegIdx).ChangeToRegister(FrameReg, false);
@@ -558,7 +557,7 @@ bool llvm::rewriteT2FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
     // register then we change to an immediate version.
     unsigned NewOpc = Opcode;
     if (AddrMode == ARMII::AddrModeT2_so) {
-      unsigned OffsetReg = MI.getOperand(FrameRegIdx+1).getReg();
+      Register OffsetReg = MI.getOperand(FrameRegIdx + 1).getReg();
       if (OffsetReg != 0) {
         MI.getOperand(FrameRegIdx).ChangeToRegister(FrameReg, false);
         return Offset == 0;
@@ -600,11 +599,44 @@ bool llvm::rewriteT2FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
         Offset = -Offset;
         isSub = true;
       }
-    } else if (AddrMode == ARMII::AddrModeT2_i8s4) {
-      Offset += MI.getOperand(FrameRegIdx + 1).getImm() * 4;
-      NumBits = 10; // 8 bits scaled by 4
+    } else if (AddrMode == ARMII::AddrMode5FP16) {
+      // VFP address mode.
+      const MachineOperand &OffOp = MI.getOperand(FrameRegIdx+1);
+      int InstrOffs = ARM_AM::getAM5FP16Offset(OffOp.getImm());
+      if (ARM_AM::getAM5FP16Op(OffOp.getImm()) == ARM_AM::sub)
+        InstrOffs *= -1;
+      NumBits = 8;
+      Scale = 2;
+      Offset += InstrOffs * 2;
+      assert((Offset & (Scale-1)) == 0 && "Can't encode this offset!");
+      if (Offset < 0) {
+        Offset = -Offset;
+        isSub = true;
+      }
+    } else if (AddrMode == ARMII::AddrModeT2_i7s4 ||
+               AddrMode == ARMII::AddrModeT2_i7s2 ||
+               AddrMode == ARMII::AddrModeT2_i7) {
+      Offset += MI.getOperand(FrameRegIdx + 1).getImm();
+      unsigned OffsetMask;
+      switch (AddrMode) {
+      case ARMII::AddrModeT2_i7s4: NumBits = 9; OffsetMask = 0x3; break;
+      case ARMII::AddrModeT2_i7s2: NumBits = 8; OffsetMask = 0x1; break;
+      default:                     NumBits = 7; OffsetMask = 0x0; break;
+      }
       // MCInst operand expects already scaled value.
       Scale = 1;
+      assert((Offset & OffsetMask) == 0 && "Can't encode this offset!");
+      (void)OffsetMask; // squash unused-variable warning at -NDEBUG
+    } else if (AddrMode == ARMII::AddrModeT2_i8s4) {
+      Offset += MI.getOperand(FrameRegIdx + 1).getImm() * 4;
+      NumBits = 8 + 2;
+      // MCInst operand expects already scaled value.
+      Scale = 1;
+      assert((Offset & 3) == 0 && "Can't encode this offset!");
+    } else if (AddrMode == ARMII::AddrModeT2_ldrex) {
+      Offset += MI.getOperand(FrameRegIdx + 1).getImm() * 4;
+      NumBits = 8; // 8 bits scaled by 4
+      Scale = 4;
       assert((Offset & 3) == 0 && "Can't encode this offset!");
     } else {
       llvm_unreachable("Unsupported addressing mode!");
@@ -616,14 +648,25 @@ bool llvm::rewriteT2FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
     MachineOperand &ImmOp = MI.getOperand(FrameRegIdx+1);
 
     // Attempt to fold address computation
-    // Common case: small offset, fits into instruction.
+    // Common case: small offset, fits into instruction. We need to make sure
+    // the register class is correct too, for instructions like the MVE
+    // VLDRH.32, which only accepts low tGPR registers.
     int ImmedOffset = Offset / Scale;
     unsigned Mask = (1 << NumBits) - 1;
-    if ((unsigned)Offset <= Mask * Scale) {
+    if ((unsigned)Offset <= Mask * Scale &&
+        (Register::isVirtualRegister(FrameReg) ||
+         RegClass->contains(FrameReg))) {
+      if (Register::isVirtualRegister(FrameReg)) {
+        // Make sure the register class for the virtual register is correct
+        MachineRegisterInfo *MRI = &MF.getRegInfo();
+        if (!MRI->constrainRegClass(FrameReg, RegClass))
+          llvm_unreachable("Unable to constrain virtual register class.");
+      }
+
       // Replace the FrameIndex with fp/sp
       MI.getOperand(FrameRegIdx).ChangeToRegister(FrameReg, false);
       if (isSub) {
-        if (AddrMode == ARMII::AddrMode5)
+        if (AddrMode == ARMII::AddrMode5 || AddrMode == ARMII::AddrMode5FP16)
           // FIXME: Not consistent.
           ImmedOffset |= 1 << NumBits;
         else
@@ -637,7 +680,7 @@ bool llvm::rewriteT2FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
     // Otherwise, offset doesn't fit. Pull in what we can to simplify
     ImmedOffset = ImmedOffset & Mask;
     if (isSub) {
-      if (AddrMode == ARMII::AddrMode5)
+      if (AddrMode == ARMII::AddrMode5 || AddrMode == ARMII::AddrMode5FP16)
         // FIXME: Not consistent.
         ImmedOffset |= 1 << NumBits;
       else {
@@ -652,7 +695,8 @@ bool llvm::rewriteT2FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
   }
 
   Offset = (isSub) ? -Offset : Offset;
-  return Offset == 0;
+  return Offset == 0 && (Register::isVirtualRegister(FrameReg) ||
+                         RegClass->contains(FrameReg));
 }
 
 ARMCC::CondCodes llvm::getITInstrPredicate(const MachineInstr &MI,
@@ -661,4 +705,29 @@ ARMCC::CondCodes llvm::getITInstrPredicate(const MachineInstr &MI,
   if (Opc == ARM::tBcc || Opc == ARM::t2Bcc)
     return ARMCC::AL;
   return getInstrPredicate(MI, PredReg);
+}
+
+int llvm::findFirstVPTPredOperandIdx(const MachineInstr &MI) {
+  const MCInstrDesc &MCID = MI.getDesc();
+
+  if (!MCID.OpInfo)
+    return -1;
+
+  for (unsigned i = 0, e = MCID.getNumOperands(); i != e; ++i)
+    if (ARM::isVpred(MCID.OpInfo[i].OperandType))
+      return i;
+
+  return -1;
+}
+
+ARMVCC::VPTCodes llvm::getVPTInstrPredicate(const MachineInstr &MI,
+                                            unsigned &PredReg) {
+  int PIdx = findFirstVPTPredOperandIdx(MI);
+  if (PIdx == -1) {
+    PredReg = 0;
+    return ARMVCC::None;
+  }
+
+  PredReg = MI.getOperand(PIdx+1).getReg();
+  return (ARMVCC::VPTCodes)MI.getOperand(PIdx).getImm();
 }

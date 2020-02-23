@@ -21,7 +21,7 @@
 #include "tapi/LinkerInterfaceFile.h"
 #include "tapi/PackedVersion32.h"
 #include "tapi/tapi.h"
-#include "clang/Basic/VersionTuple.h"
+#include "clang/Basic/Version.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include <utility>
@@ -31,16 +31,11 @@ TAPI_NAMESPACE_INTERNAL_BEGIN
 struct PackedVersion {
   uint32_t _version{0};
 
-  constexpr PackedVersion() = default;
   constexpr PackedVersion(uint32_t version) : _version(version) {}
   PackedVersion(unsigned major, unsigned minor, unsigned subminor)
       : _version((major << 16) | ((minor & 0xff) << 8) | (subminor & 0xff)) {}
-  PackedVersion(clang::VersionTuple version) {
-    _version = version.getMajor() << 16;
-    if (auto minor = version.getMinor())
-      _version |= (*minor & 0xff) << 8;
-    if (auto subminor = version.getSubminor())
-      _version |= *subminor & 0xff;
+  PackedVersion() {
+    _version = clang::getClangMajorVersionNumber() << 16;
   }
 
   bool empty() const { return _version == 0; }

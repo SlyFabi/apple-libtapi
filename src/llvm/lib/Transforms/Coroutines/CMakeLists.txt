@@ -1,10 +1,10 @@
-add_llvm_library(LLVMCoroutines
+add_llvm_component_library(LLVMCoroutines
   Coroutines.cpp
   CoroCleanup.cpp
   CoroEarly.cpp
   CoroElide.cpp
   CoroFrame.cpp
-  CoroSplit.cpp  
+  CoroSplit.cpp
 
   DEPENDS
   intrinsics_gen

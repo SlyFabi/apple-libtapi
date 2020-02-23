@@ -13,11 +13,11 @@ define void @patatino(i64 %n, i64 %i, %struct.S* %p) !dbg !7 {
 ; CHECK-NEXT:    call void @llvm.dbg.value(metadata i64 [[I:%.*]], metadata !19, metadata !DIExpression()), !dbg !24
 ; CHECK-NEXT:    call void @llvm.dbg.value(metadata %struct.S* [[P:%.*]], metadata !20, metadata !DIExpression()), !dbg !25
 ; CHECK-NEXT:    [[X1:%.*]] = getelementptr inbounds [[STRUCT_S:%.*]], %struct.S* [[P]], i64 [[N]], i32 0, !dbg !26
-; CHECK-NEXT:    call void @llvm.dbg.value(metadata i64 undef, metadata !21, metadata !DIExpression()), !dbg !27
+; CHECK-NEXT:    call void @llvm.dbg.value(metadata !2, metadata !21, metadata !DIExpression()), !dbg !27
 ; CHECK-NEXT:    [[Y3:%.*]] = getelementptr inbounds [[STRUCT_S]], %struct.S* [[P]], i64 [[N]], i32 1, !dbg !28
 ; CHECK-NEXT:    [[TMP0:%.*]] = bitcast i64* [[X1]] to <2 x i64>*, !dbg !26
 ; CHECK-NEXT:    [[TMP1:%.*]] = load <2 x i64>, <2 x i64>* [[TMP0]], align 8, !dbg !26, !tbaa !29
-; CHECK-NEXT:    call void @llvm.dbg.value(metadata i64 undef, metadata !22, metadata !DIExpression()), !dbg !33
+; CHECK-NEXT:    call void @llvm.dbg.value(metadata !2, metadata !22, metadata !DIExpression()), !dbg !33
 ; CHECK-NEXT:    [[X5:%.*]] = getelementptr inbounds [[STRUCT_S]], %struct.S* [[P]], i64 [[I]], i32 0, !dbg !34
 ; CHECK-NEXT:    [[Y7:%.*]] = getelementptr inbounds [[STRUCT_S]], %struct.S* [[P]], i64 [[I]], i32 1, !dbg !35
 ; CHECK-NEXT:    [[TMP2:%.*]] = bitcast i64* [[X5]] to <2 x i64>*, !dbg !36
@@ -57,7 +57,7 @@ attributes #1 = { nounwind readnone speculatable }
 !4 = !{i32 2, !"Debug Info Version", i32 3}
 !5 = !{i32 1, !"wchar_size", i32 4}
 !6 = !{!"clang version 7.0.0 (trunk 330946) (llvm/trunk 330976)"}
-!7 = distinct !DISubprogram(name: "patatino", scope: !1, file: !1, line: 6, type: !8, isLocal: false, isDefinition: true, scopeLine: 6, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !17)
+!7 = distinct !DISubprogram(name: "patatino", scope: !1, file: !1, line: 6, type: !8, isLocal: false, isDefinition: true, scopeLine: 6, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !17)
 !8 = !DISubroutineType(types: !9)
 !9 = !{null, !10, !10, !11}
 !10 = !DIBasicType(name: "long int", size: 64, encoding: DW_ATE_signed)

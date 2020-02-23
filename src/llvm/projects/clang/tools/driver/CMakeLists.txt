@@ -4,6 +4,7 @@ set( LLVM_LINK_COMPONENTS
   CodeGen
   Core
   IPO
+  AggressiveInstCombine
   InstCombine
   Instrumentation
   MC
@@ -18,10 +19,9 @@ set( LLVM_LINK_COMPONENTS
 
 option(CLANG_PLUGIN_SUPPORT "Build clang with plugin support" ON)
 
-# Support plugins. This must be before add_clang_executable as it reads
-# LLVM_NO_DEAD_STRIP.
+# Support plugins.
 if(CLANG_PLUGIN_SUPPORT)
-  set(LLVM_NO_DEAD_STRIP 1)
+  set(support_plugins SUPPORT_PLUGINS)
 endif()
 
 if(NOT CLANG_BUILT_STANDALONE)
@@ -32,14 +32,14 @@ add_clang_tool(clang
   driver.cpp
   cc1_main.cpp
   cc1as_main.cpp
-  apinotes_main.cpp
   cc1gen_reproducer_main.cpp
 
   DEPENDS
   ${tablegen_deps}
+  ${support_plugins}
   )
 
-target_link_libraries(clang
+clang_target_link_libraries(clang
   PRIVATE
   clangBasic
   clangAPINotes
@@ -47,6 +47,7 @@ target_link_libraries(clang
   clangDriver
   clangFrontend
   clangFrontendTool
+  clangSerialization
   )
 
 if(WIN32 AND NOT CYGWIN)
@@ -60,14 +61,10 @@ if(CLANG_PLUGIN_SUPPORT)
   export_executable_symbols(clang)
 endif()
 
-add_dependencies(clang clang-headers)
+add_dependencies(clang clang-resource-headers)
 
 if(NOT CLANG_LINKS_TO_CREATE)
   set(CLANG_LINKS_TO_CREATE clang++ clang-cl clang-cpp)
-
-  if (MSVC)
-    list(APPEND CLANG_LINKS_TO_CREATE ../msbuild-bin/cl)
-  endif()
 endif()
 
 foreach(link ${CLANG_LINKS_TO_CREATE})
@@ -99,20 +96,16 @@ if (APPLE)
   set(TOOL_INFO_BUILD_VERSION)
 endif()
 
-if(CLANG_ORDER_FILE AND (LD64_EXECUTABLE OR GOLD_EXECUTABLE))
-  include(CMakePushCheckState)
+if(CLANG_ORDER_FILE AND
+    (LLVM_LINKER_IS_LD64 OR LLVM_LINKER_IS_GOLD OR LLVM_LINKER_IS_LLD))
+  include(CheckLinkerFlag)
 
-  function(check_linker_flag flag out_var)
-    cmake_push_check_state()
-    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} ${flag}")
-    check_cxx_compiler_flag("" ${out_var})
-    cmake_pop_check_state()
-  endfunction()
-
-  if (LD64_EXECUTABLE)
+  if (LLVM_LINKER_IS_LD64)
     set(LINKER_ORDER_FILE_OPTION "-Wl,-order_file,${CLANG_ORDER_FILE}")
-  elseif (GOLD_EXECUTABLE)
+  elseif (LLVM_LINKER_IS_GOLD)
     set(LINKER_ORDER_FILE_OPTION "-Wl,--section-ordering-file,${CLANG_ORDER_FILE}")
+  elseif (LLVM_LINKER_IS_LLD)
+    set(LINKER_ORDER_FILE_OPTION "-Wl,--symbol-ordering-file,${CLANG_ORDER_FILE}")
   endif()
 
   # This is a test to ensure the actual order file works with the linker.
@@ -130,7 +123,3 @@ if(CLANG_ORDER_FILE AND (LD64_EXECUTABLE OR GOLD_EXECUTABLE))
     set_target_properties(clang PROPERTIES LINK_DEPENDS ${CLANG_ORDER_FILE})
   endif()
 endif()
-
-if(WITH_POLLY AND LINK_POLLY_INTO_TOOLS)
-  target_link_libraries(clang PRIVATE Polly)
-endif(WITH_POLLY AND LINK_POLLY_INTO_TOOLS)

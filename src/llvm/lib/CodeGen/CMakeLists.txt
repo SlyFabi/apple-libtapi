@@ -1,4 +1,4 @@
-add_llvm_library(LLVMCodeGen
+add_llvm_component_library(LLVMCodeGen
   AggressiveAntiDepBreaker.cpp
   AllocationOrder.cpp
   Analysis.cpp
@@ -6,9 +6,12 @@ add_llvm_library(LLVMCodeGen
   BasicTargetTransformInfo.cpp
   BranchFolding.cpp
   BranchRelaxation.cpp
+  BreakFalseDeps.cpp
   BuiltinGCs.cpp
   CalcSpillWeights.cpp
   CallingConvLower.cpp
+  CFGuardLongjmp.cpp
+  CFIInstrInserter.cpp
   CodeGen.cpp
   CodeGenPrepare.cpp
   CriticalAntiDepBreaker.cpp
@@ -18,25 +21,27 @@ add_llvm_library(LLVMCodeGen
   DwarfEHPrepare.cpp
   EarlyIfConversion.cpp
   EdgeBundles.cpp
-  ExecutionDepsFix.cpp
-  ExpandISelPseudos.cpp
+  ExecutionDomainFix.cpp
   ExpandMemCmp.cpp
   ExpandPostRAPseudos.cpp
   ExpandReductions.cpp
   FaultMaps.cpp
   FEntryInserter.cpp
+  FinalizeISel.cpp
   FuncletLayout.cpp
   GCMetadata.cpp
   GCMetadataPrinter.cpp
   GCRootLowering.cpp
   GCStrategy.cpp
   GlobalMerge.cpp
+  HardwareLoops.cpp
   IfConversion.cpp
   ImplicitNullChecks.cpp
   IndirectBrExpandPass.cpp
   InlineSpiller.cpp
   InterferenceCache.cpp
   InterleavedAccessPass.cpp
+  InterleavedLoadCombinePass.cpp
   IntrinsicLowering.cpp
   LatencyPriorityQueue.cpp
   LazyMachineBlockFrequencyInfo.cpp
@@ -56,6 +61,7 @@ add_llvm_library(LLVMCodeGen
   LiveVariables.cpp
   LLVMTargetMachine.cpp
   LocalStackSlotAllocation.cpp
+  LoopTraversal.cpp
   LowLevelType.cpp
   LowerEmuTLS.cpp
   MachineBasicBlock.cpp
@@ -75,25 +81,28 @@ add_llvm_library(LLVMCodeGen
   MachineInstr.cpp
   MachineLICM.cpp
   MachineLoopInfo.cpp
+  MachineLoopUtils.cpp
   MachineModuleInfo.cpp
   MachineModuleInfoImpls.cpp
   MachineOperand.cpp
   MachineOptimizationRemarkEmitter.cpp
   MachineOutliner.cpp
-  MachinePassRegistry.cpp
   MachinePipeliner.cpp
   MachinePostDominators.cpp
   MachineRegionInfo.cpp
   MachineRegisterInfo.cpp
   MachineScheduler.cpp
   MachineSink.cpp
+  MachineSizeOpts.cpp
   MachineSSAUpdater.cpp
   MachineTraceMetrics.cpp
   MachineVerifier.cpp
+  ModuloSchedule.cpp
   PatchableFunction.cpp
   MIRPrinter.cpp
   MIRPrintingPass.cpp
   MacroFusion.cpp
+  NonRelocatableStringpool.cpp
   OptimizePHIs.cpp
   ParallelCG.cpp
   PeepholeOptimizer.cpp
@@ -105,6 +114,7 @@ add_llvm_library(LLVMCodeGen
   ProcessImplicitDefs.cpp
   PrologEpilogInserter.cpp
   PseudoSourceValue.cpp
+  ReachingDefAnalysis.cpp
   RegAllocBase.cpp
   RegAllocBasic.cpp
   RegAllocFast.cpp
@@ -115,6 +125,8 @@ add_llvm_library(LLVMCodeGen
   RegisterPressure.cpp
   RegisterScavenging.cpp
   RenameIndependentSubregs.cpp
+  MIRVRegNamerUtils.cpp
+  MIRNamerPass.cpp
   MIRCanonicalizerPass.cpp
   RegisterUsageInfo.cpp
   RegUsageInfoCollector.cpp
@@ -139,6 +151,8 @@ add_llvm_library(LLVMCodeGen
   StackMaps.cpp
   StackProtector.cpp
   StackSlotColoring.cpp
+  SwiftErrorValueTracking.cpp
+  SwitchLoweringUtils.cpp
   TailDuplication.cpp
   TailDuplicator.cpp
   TargetFrameLoweringImpl.cpp
@@ -150,9 +164,12 @@ add_llvm_library(LLVMCodeGen
   TargetRegisterInfo.cpp
   TargetSchedule.cpp
   TargetSubtargetInfo.cpp
+  TypePromotion.cpp
   TwoAddressInstructionPass.cpp
   UnreachableBlockElim.cpp
+  ValueTypes.cpp
   VirtRegMap.cpp
+  WasmEHPrepare.cpp
   WinEHPrepare.cpp
   XRayInstrumentation.cpp
 

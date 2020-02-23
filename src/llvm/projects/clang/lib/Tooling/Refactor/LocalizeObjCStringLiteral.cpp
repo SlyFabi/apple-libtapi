@@ -58,7 +58,7 @@ clang::tooling::initiateLocalizeObjCStringLiteralOperation(
   Result.Initiated = true;
   if (!CreateOperation)
     return Result;
-  auto Operation = llvm::make_unique<LocalizeObjCStringLiteralOperation>(E);
+  auto Operation = std::make_unique<LocalizeObjCStringLiteralOperation>(E);
   Result.RefactoringOp = std::move(Operation);
   return Result;
 }
@@ -72,11 +72,11 @@ LocalizeObjCStringLiteralOperation::perform(ASTContext &Context,
   // TODO: New API: Replace by something like Node.wrap("NSLocalizedString(", ",
   // @""")
   SourceLocation LocStart =
-      Context.getSourceManager().getSpellingLoc(E->getLocStart());
+      Context.getSourceManager().getSpellingLoc(E->getBeginLoc());
   Replacements.emplace_back(SourceRange(LocStart, LocStart),
                             StringRef("NSLocalizedString("));
   SourceLocation LocEnd = getPreciseTokenLocEnd(
-      Context.getSourceManager().getSpellingLoc(E->getLocEnd()),
+      Context.getSourceManager().getSpellingLoc(E->getEndLoc()),
       Context.getSourceManager(), Context.getLangOpts());
   Replacements.emplace_back(SourceRange(LocEnd, LocEnd), StringRef(", @\"\")"));
   return std::move(Replacements);

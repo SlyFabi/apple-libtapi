@@ -1,4 +1,4 @@
-add_llvm_library(LLVMTransformUtils
+add_llvm_component_library(LLVMTransformUtils
   ASanStackFrameLayout.cpp
   AddDiscriminators.cpp
   BasicBlockUtils.cpp
@@ -6,10 +6,13 @@ add_llvm_library(LLVMTransformUtils
   BuildLibCalls.cpp
   BypassSlowDivision.cpp
   CallPromotionUtils.cpp
+  CanonicalizeAliases.cpp
   CloneFunction.cpp
   CloneModule.cpp
   CodeExtractor.cpp
+  CodeMoverUtils.cpp
   CtorUtils.cpp
+  Debugify.cpp
   DemoteRegToStack.cpp
   EntryExitInstrumenter.cpp
   EscapeEnumerator.cpp
@@ -18,15 +21,19 @@ add_llvm_library(LLVMTransformUtils
   FunctionComparator.cpp
   FunctionImportUtils.cpp
   GlobalStatus.cpp
+  GuardUtils.cpp
   InlineFunction.cpp
   ImportedFunctionsInliningStatistics.cpp
+  InjectTLIMappings.cpp
   InstructionNamer.cpp
   IntegerDivision.cpp
   LCSSA.cpp
   LibCallsShrinkWrap.cpp
   Local.cpp
+  LoopRotationUtils.cpp
   LoopSimplify.cpp
   LoopUnroll.cpp
+  LoopUnrollAndJam.cpp
   LoopUnrollPeel.cpp
   LoopUnrollRuntime.cpp
   LoopUtils.cpp
@@ -36,18 +43,19 @@ add_llvm_library(LLVMTransformUtils
   LowerSwitch.cpp
   Mem2Reg.cpp
   MetaRenamer.cpp
+  MisExpect.cpp
   ModuleUtils.cpp
   NameAnonGlobals.cpp
-  OrderedInstructions.cpp
   PredicateInfo.cpp
   PromoteMemoryToRegister.cpp
   StripGCRelocates.cpp
   SSAUpdater.cpp
+  SSAUpdaterBulk.cpp
   SanitizerStats.cpp
   SimplifyCFG.cpp
   SimplifyIndVar.cpp
-  SimplifyInstructions.cpp
   SimplifyLibCalls.cpp
+  SizeOpts.cpp
   SplitModule.cpp
   StripNonLineTableDebugInfo.cpp
   SymbolRewriter.cpp

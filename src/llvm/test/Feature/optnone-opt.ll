@@ -3,7 +3,7 @@
 ; RUN: opt -O2 -S -debug %s 2>&1 | FileCheck %s --check-prefix=OPT-O1 --check-prefix=OPT-O2O3
 ; RUN: opt -O3 -S -debug %s 2>&1 | FileCheck %s --check-prefix=OPT-O1 --check-prefix=OPT-O2O3
 ; RUN: opt -dce -die -gvn-hoist -loweratomic -S -debug %s 2>&1 | FileCheck %s --check-prefix=OPT-MORE
-; RUN: opt -indvars -licm -loop-deletion -loop-extract -loop-idiom -loop-reduce -loop-reroll -loop-rotate -loop-unroll -loop-unswitch -S -debug %s 2>&1 | FileCheck %s --check-prefix=OPT-LOOP
+; RUN: opt -indvars -licm -loop-deletion -loop-extract -loop-idiom -loop-instsimplify -loop-reduce -loop-reroll -loop-rotate -loop-unroll -loop-unswitch -S -debug %s 2>&1 | FileCheck %s --check-prefix=OPT-LOOP
 
 ; REQUIRES: asserts
 
@@ -39,16 +39,10 @@ attributes #0 = { optnone noinline }
 ; IR passes run at -O1 and higher.
 ; OPT-O1-DAG: Skipping pass 'Aggressive Dead Code Elimination'
 ; OPT-O1-DAG: Skipping pass 'Combine redundant instructions'
-; OPT-O1-DAG: Skipping pass 'Dead Store Elimination'
 ; OPT-O1-DAG: Skipping pass 'Early CSE'
-; OPT-O1-DAG: Skipping pass 'Jump Threading'
-; OPT-O1-DAG: Skipping pass 'MemCpy Optimization'
 ; OPT-O1-DAG: Skipping pass 'Reassociate expressions'
 ; OPT-O1-DAG: Skipping pass 'Simplify the CFG'
 ; OPT-O1-DAG: Skipping pass 'Sparse Conditional Constant Propagation'
-; OPT-O1-DAG: Skipping pass 'SROA'
-; OPT-O1-DAG: Skipping pass 'Tail Call Elimination'
-; OPT-O1-DAG: Skipping pass 'Value Propagation'
 
 ; Additional IR passes run at -O2 and higher.
 ; OPT-O2O3-DAG: Skipping pass 'Global Value Numbering'
@@ -67,5 +61,6 @@ attributes #0 = { optnone noinline }
 ; OPT-LOOP-DAG: Skipping pass 'Recognize loop idioms'
 ; OPT-LOOP-DAG: Skipping pass 'Reroll loops'
 ; OPT-LOOP-DAG: Skipping pass 'Rotate Loops'
+; OPT-LOOP-DAG: Skipping pass 'Simplify instructions in loops'
 ; OPT-LOOP-DAG: Skipping pass 'Unroll loops'
 ; OPT-LOOP-DAG: Skipping pass 'Unswitch loops'

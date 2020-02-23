@@ -1,9 +1,8 @@
 //===--- PPC.cpp - PPC Helpers for Tools ------------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,6 +13,7 @@
 #include "clang/Driver/Options.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Option/ArgList.h"
+#include "llvm/Support/Host.h"
 
 using namespace clang::driver;
 using namespace clang::driver::tools;
@@ -53,10 +53,12 @@ std::string ppc::getPPCTargetCPU(const ArgList &Args) {
         .Case("7450", "7450")
         .Case("G4+", "g4+")
         .Case("750", "750")
+        .Case("8548", "e500")
         .Case("970", "970")
         .Case("G5", "g5")
         .Case("a2", "a2")
         .Case("a2q", "a2q")
+        .Case("e500", "e500")
         .Case("e500mc", "e500mc")
         .Case("e5500", "e5500")
         .Case("power3", "pwr3")
@@ -68,6 +70,7 @@ std::string ppc::getPPCTargetCPU(const ArgList &Args) {
         .Case("power7", "pwr7")
         .Case("power8", "pwr8")
         .Case("power9", "pwr9")
+        .Case("future", "future")
         .Case("pwr3", "pwr3")
         .Case("pwr4", "pwr4")
         .Case("pwr5", "pwr5")
@@ -106,6 +109,21 @@ void ppc::getPPCTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   ppc::FloatABI FloatABI = ppc::getPPCFloatABI(D, Args);
   if (FloatABI == ppc::FloatABI::Soft)
     Features.push_back("-hard-float");
+
+  ppc::ReadGOTPtrMode ReadGOT = ppc::getPPCReadGOTPtrMode(D, Triple, Args);
+  if (ReadGOT == ppc::ReadGOTPtrMode::SecurePlt)
+    Features.push_back("+secure-plt");
+}
+
+ppc::ReadGOTPtrMode ppc::getPPCReadGOTPtrMode(const Driver &D, const llvm::Triple &Triple,
+                                              const ArgList &Args) {
+  if (Args.getLastArg(options::OPT_msecure_plt))
+    return ppc::ReadGOTPtrMode::SecurePlt;
+  if ((Triple.isOSFreeBSD() && Triple.getOSMajorVersion() >= 13) ||
+      Triple.isOSNetBSD() || Triple.isOSOpenBSD() || Triple.isMusl())
+    return ppc::ReadGOTPtrMode::SecurePlt;
+  else
+    return ppc::ReadGOTPtrMode::Bss;
 }
 
 ppc::FloatABI ppc::getPPCFloatABI(const Driver &D, const ArgList &Args) {

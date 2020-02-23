@@ -1,15 +1,16 @@
 //===-- SlotIndexes.cpp - Slot Indexes Pass  ------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/SlotIndexes.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/Config/llvm-config.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -18,11 +19,20 @@ using namespace llvm;
 #define DEBUG_TYPE "slotindexes"
 
 char SlotIndexes::ID = 0;
+
+SlotIndexes::SlotIndexes() : MachineFunctionPass(ID), mf(nullptr) {
+  initializeSlotIndexesPass(*PassRegistry::getPassRegistry());
+}
+
+SlotIndexes::~SlotIndexes() {
+  // The indexList's nodes are all allocated in the BumpPtrAllocator.
+  indexList.clearAndLeakNodesUnsafely();
+}
+
 INITIALIZE_PASS(SlotIndexes, DEBUG_TYPE,
                 "Slot index numbering", false, false)
 
 STATISTIC(NumLocalRenum,  "Number of local renumberings");
-STATISTIC(NumGlobalRenum, "Number of global renumberings");
 
 void SlotIndexes::getAnalysisUsage(AnalysisUsage &au) const {
   au.setPreservesAll();
@@ -73,7 +83,7 @@ bool SlotIndexes::runOnMachineFunction(MachineFunction &fn) {
     SlotIndex blockStartIndex(&indexList.back(), SlotIndex::Slot_Block);
 
     for (MachineInstr &MI : MBB) {
-      if (MI.isDebugValue())
+      if (MI.isDebugInstr())
         continue;
 
       // Insert a store index for the instr.
@@ -94,9 +104,9 @@ bool SlotIndexes::runOnMachineFunction(MachineFunction &fn) {
   }
 
   // Sort the Idx2MBBMap
-  std::sort(idx2MBBMap.begin(), idx2MBBMap.end(), Idx2MBBCompare());
+  llvm::sort(idx2MBBMap, less_first());
 
-  DEBUG(mf->print(dbgs(), this));
+  LLVM_DEBUG(mf->print(dbgs(), this));
 
   // And we're done!
   return false;
@@ -144,20 +154,6 @@ void SlotIndexes::removeSingleMachineInstrFromMaps(MachineInstr &MI) {
   }
 }
 
-void SlotIndexes::renumberIndexes() {
-  // Renumber updates the index of every element of the index list.
-  DEBUG(dbgs() << "\n*** Renumbering SlotIndexes ***\n");
-  ++NumGlobalRenum;
-
-  unsigned index = 0;
-
-  for (IndexList::iterator I = indexList.begin(), E = indexList.end();
-       I != E; ++I) {
-    I->setIndex(index);
-    index += SlotIndex::InstrDist;
-  }
-}
-
 // Renumber indexes locally after curItr was inserted, but failed to get a new
 // index.
 void SlotIndexes::renumberIndexes(IndexList::iterator curItr) {
@@ -173,8 +169,8 @@ void SlotIndexes::renumberIndexes(IndexList::iterator curItr) {
     // If the next index is bigger, we have caught up.
   } while (curItr != indexList.end() && curItr->getIndex() <= index);
 
-  DEBUG(dbgs() << "\n*** Renumbered SlotIndexes " << startItr->getIndex() << '-'
-               << index << " ***\n");
+  LLVM_DEBUG(dbgs() << "\n*** Renumbered SlotIndexes " << startItr->getIndex()
+                    << '-' << index << " ***\n");
   ++NumLocalRenum;
 }
 
@@ -244,7 +240,7 @@ void SlotIndexes::repairIndexesInRange(MachineBasicBlock *MBB,
   for (MachineBasicBlock::iterator I = End; I != Begin;) {
     --I;
     MachineInstr &MI = *I;
-    if (!MI.isDebugValue() && mi2iMap.find(&MI) == mi2iMap.end())
+    if (!MI.isDebugInstr() && mi2iMap.find(&MI) == mi2iMap.end())
       insertMachineInstrInMaps(MI);
   }
 }

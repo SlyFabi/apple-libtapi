@@ -21,7 +21,7 @@
 
 ; We are expecting foo() to be inlined in main() (almost all the cycles are
 ; spent inside foo).
-; CHECK: remark: remarks.cc:13:21: inlined hot callee '_Z3foov' into 'main'
+; CHECK: remark: remarks.cc:13:21: inlined callee '_Z3foov' into 'main'
 
 ; The back edge for the loop is the hottest edge in the loop subgraph.
 ; CHECK: remark: remarks.cc:6:9: most popular destination for conditional branches at remarks.cc:5:3
@@ -31,12 +31,12 @@
 
 ; Checking to see if YAML file is generated and contains remarks
 ;YAML:       --- !Passed
-;YAML-NEXT:  Pass:            sample-profile
-;YAML-NEXT:  Name:            HotInline
+;YAML-NEXT:  Pass:            sample-profile-inline
+;YAML-NEXT:  Name:            InlineSuccess
 ;YAML-NEXT:  DebugLoc:        { File: remarks.cc, Line: 13, Column: 21 }
 ;YAML-NEXT:  Function:        main
 ;YAML-NEXT:  Args:
-;YAML-NEXT:    - String:          'inlined hot callee '''
+;YAML-NEXT:    - String:          'inlined callee '''
 ;YAML-NEXT:    - Callee:          _Z3foov
 ;YAML-NEXT:      DebugLoc:        { File: remarks.cc, Line: 3, Column: 0 }
 ;YAML-NEXT:    - String:          ''' into '''
@@ -155,10 +155,10 @@ entry:
   ret i32 %conv, !dbg !58
 }
 
-attributes #0 = { nounwind uwtable "disable-tail-calls"="false" "less-precise-fpmad"="false" "no-frame-pointer-elim"="false" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+fxsr,+mmx,+sse,+sse2" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { nounwind uwtable "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+fxsr,+mmx,+sse,+sse2" "unsafe-fp-math"="false" "use-soft-float"="false" }
 attributes #1 = { nounwind argmemonly }
 attributes #2 = { nounwind readnone }
-attributes #3 = { nounwind "disable-tail-calls"="false" "less-precise-fpmad"="false" "no-frame-pointer-elim"="false" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+fxsr,+mmx,+sse,+sse2" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #3 = { nounwind "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+fxsr,+mmx,+sse,+sse2" "unsafe-fp-math"="false" "use-soft-float"="false" }
 attributes #4 = { nounwind }
 
 !llvm.dbg.cu = !{!0}
@@ -168,7 +168,7 @@ attributes #4 = { nounwind }
 !0 = distinct !DICompileUnit(language: DW_LANG_C_plus_plus, file: !1, producer: "clang version 3.8.0 (trunk 251041) (llvm/trunk 251053)", isOptimized: true, runtimeVersion: 0, emissionKind: NoDebug, enums: !2)
 !1 = !DIFile(filename: "remarks.cc", directory: ".")
 !2 = !{}
-!4 = distinct !DISubprogram(name: "foo", linkageName: "_Z3foov", scope: !1, file: !1, line: 3, type: !5, isLocal: false, isDefinition: true, scopeLine: 3, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !8)
+!4 = distinct !DISubprogram(name: "foo", linkageName: "_Z3foov", scope: !1, file: !1, line: 3, type: !5, isLocal: false, isDefinition: true, scopeLine: 3, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !8)
 !5 = !DISubroutineType(types: !6)
 !6 = !{!7}
 !7 = !DIBasicType(name: "long long int", size: 64, align: 64, encoding: DW_ATE_signed)
@@ -177,7 +177,7 @@ attributes #4 = { nounwind }
 !10 = !DILocalVariable(name: "i", scope: !11, file: !1, line: 5, type: !12)
 !11 = distinct !DILexicalBlock(scope: !4, file: !1, line: 5, column: 3)
 !12 = !DIBasicType(name: "int", size: 32, align: 32, encoding: DW_ATE_signed)
-!13 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 13, type: !14, isLocal: false, isDefinition: true, scopeLine: 13, flags: DIFlagPrototyped, isOptimized: true, unit: !0, variables: !2)
+!13 = distinct !DISubprogram(name: "main", scope: !1, file: !1, line: 13, type: !14, isLocal: false, isDefinition: true, scopeLine: 13, flags: DIFlagPrototyped, isOptimized: true, unit: !0, retainedNodes: !2)
 !14 = !DISubroutineType(types: !15)
 !15 = !{!12}
 !16 = !{i32 2, !"Dwarf Version", i32 4}

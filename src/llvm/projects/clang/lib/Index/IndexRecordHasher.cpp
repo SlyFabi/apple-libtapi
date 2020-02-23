@@ -10,6 +10,7 @@
 #include "IndexRecordHasher.h"
 #include "FileIndexRecord.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclVisitor.h"
 #include "llvm/Support/Path.h"
@@ -153,7 +154,7 @@ public:
 
 hash_code IndexRecordHasher::hashRecord(const FileIndexRecord &Record) {
   hash_code Hash = INITIAL_HASH;
-  for (auto &Info : Record.getDeclOccurrences()) {
+  for (auto &Info : Record.getDeclOccurrencesSortedByOffset()) {
     COMBINE_HASH(Info.Roles, Info.Offset, hash(Info.Dcl));
     for (auto &Rel : Info.Relations) {
       COMBINE_HASH(hash(Rel.RelatedSymbol));
@@ -340,7 +341,7 @@ static hash_code computeHash(const TemplateArgument &Arg,
 
   case TemplateArgument::TemplateExpansion:
     COMBINE_HASH('P'); // pack expansion of...
-    // Fall through
+    LLVM_FALLTHROUGH;
   case TemplateArgument::Template:
     COMBINE_HASH(computeHash(Arg.getAsTemplateOrTemplatePattern(), Hasher));
     break;
@@ -431,6 +432,7 @@ hash_code IndexRecordHasher::hashImpl(DeclarationName Name) {
       break;
     case DeclarationName::CXXLiteralOperatorName:
       COMBINE_HASH(computeHash(Name.getCXXLiteralIdentifier()));
+      break;
     case DeclarationName::CXXUsingDirective:
       break;
     case DeclarationName::CXXDeductionGuideName:

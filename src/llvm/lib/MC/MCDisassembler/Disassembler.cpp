@@ -1,9 +1,8 @@
 //===-- lib/MC/Disassembler.cpp - Disassembler Public C Interface ---------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,6 +24,7 @@
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSchedule.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCTargetOptions.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/TargetRegistry.h"
@@ -38,7 +38,7 @@ using namespace llvm;
 // LLVMCreateDisasm() creates a disassembler for the TripleName.  Symbolic
 // disassembly is supported by passing a block of information in the DisInfo
 // parameter and specifying the TagType and callback functions as described in
-// the header llvm-c/Disassembler.h .  The pointer to the block and the 
+// the header llvm-c/Disassembler.h .  The pointer to the block and the
 // functions can all be passed as NULL.  If successful, this returns a
 // disassembler context.  If not, it returns NULL.
 //
@@ -53,31 +53,34 @@ LLVMCreateDisasmCPUFeatures(const char *TT, const char *CPU,
   if (!TheTarget)
     return nullptr;
 
-  const MCRegisterInfo *MRI = TheTarget->createMCRegInfo(TT);
+  std::unique_ptr<const MCRegisterInfo> MRI(TheTarget->createMCRegInfo(TT));
   if (!MRI)
     return nullptr;
 
+  MCTargetOptions MCOptions;
   // Get the assembler info needed to setup the MCContext.
-  const MCAsmInfo *MAI = TheTarget->createMCAsmInfo(*MRI, TT);
+  std::unique_ptr<const MCAsmInfo> MAI(
+      TheTarget->createMCAsmInfo(*MRI, TT, MCOptions));
   if (!MAI)
     return nullptr;
 
-  const MCInstrInfo *MII = TheTarget->createMCInstrInfo();
+  std::unique_ptr<const MCInstrInfo> MII(TheTarget->createMCInstrInfo());
   if (!MII)
     return nullptr;
 
-  const MCSubtargetInfo *STI =
-      TheTarget->createMCSubtargetInfo(TT, CPU, Features);
+  std::unique_ptr<const MCSubtargetInfo> STI(
+      TheTarget->createMCSubtargetInfo(TT, CPU, Features));
   if (!STI)
     return nullptr;
 
   // Set up the MCContext for creating symbols and MCExpr's.
-  MCContext *Ctx = new MCContext(MAI, MRI, nullptr);
+  std::unique_ptr<MCContext> Ctx(new MCContext(MAI.get(), MRI.get(), nullptr));
   if (!Ctx)
     return nullptr;
 
   // Set up disassembler.
-  MCDisassembler *DisAsm = TheTarget->createMCDisassembler(*STI, *Ctx);
+  std::unique_ptr<MCDisassembler> DisAsm(
+      TheTarget->createMCDisassembler(*STI, *Ctx));
   if (!DisAsm)
     return nullptr;
 
@@ -87,19 +90,20 @@ LLVMCreateDisasmCPUFeatures(const char *TT, const char *CPU,
     return nullptr;
 
   std::unique_ptr<MCSymbolizer> Symbolizer(TheTarget->createMCSymbolizer(
-      TT, GetOpInfo, SymbolLookUp, DisInfo, Ctx, std::move(RelInfo)));
+      TT, GetOpInfo, SymbolLookUp, DisInfo, Ctx.get(), std::move(RelInfo)));
   DisAsm->setSymbolizer(std::move(Symbolizer));
 
   // Set up the instruction printer.
   int AsmPrinterVariant = MAI->getAssemblerDialect();
-  MCInstPrinter *IP = TheTarget->createMCInstPrinter(
-      Triple(TT), AsmPrinterVariant, *MAI, *MII, *MRI);
+  std::unique_ptr<MCInstPrinter> IP(TheTarget->createMCInstPrinter(
+      Triple(TT), AsmPrinterVariant, *MAI, *MII, *MRI));
   if (!IP)
     return nullptr;
 
-  LLVMDisasmContext *DC =
-      new LLVMDisasmContext(TT, DisInfo, TagType, GetOpInfo, SymbolLookUp,
-                            TheTarget, MAI, MRI, STI, MII, Ctx, DisAsm, IP);
+  LLVMDisasmContext *DC = new LLVMDisasmContext(
+      TT, DisInfo, TagType, GetOpInfo, SymbolLookUp, TheTarget, std::move(MAI),
+      std::move(MRI), std::move(STI), std::move(MII), std::move(Ctx),
+      std::move(DisAsm), std::move(IP));
   if (!DC)
     return nullptr;
 
@@ -130,7 +134,7 @@ void LLVMDisasmDispose(LLVMDisasmContextRef DCR){
   delete DC;
 }
 
-/// \brief Emits the comments that are stored in \p DC comment stream.
+/// Emits the comments that are stored in \p DC comment stream.
 /// Each comment in the comment stream must end with a newline.
 static void emitComments(LLVMDisasmContext *DC,
                          formatted_raw_ostream &FormattedOS) {
@@ -158,7 +162,7 @@ static void emitComments(LLVMDisasmContext *DC,
   DC->CommentsToEmit.clear();
 }
 
-/// \brief Gets latency information for \p Inst from the itinerary
+/// Gets latency information for \p Inst from the itinerary
 /// scheduling model, based on \p DC information.
 /// \return The maximum expected latency over all the operands or -1
 /// if no information is available.
@@ -184,7 +188,7 @@ static int getItineraryLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
   return Latency;
 }
 
-/// \brief Gets latency information for \p Inst, based on \p DC information.
+/// Gets latency information for \p Inst, based on \p DC information.
 /// \return The maximum expected latency over all the definitions or -1
 /// if no information is available.
 static int getLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
@@ -209,7 +213,7 @@ static int getLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
     return NoInformationAvailable;
 
   // Compute output latency.
-  int Latency = 0;
+  int16_t Latency = 0;
   for (unsigned DefIdx = 0, DefEnd = SCDesc->NumWriteLatencyEntries;
        DefIdx != DefEnd; ++DefIdx) {
     // Lookup the definition's write latency in SubtargetInfo.
@@ -221,7 +225,7 @@ static int getLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
   return Latency;
 }
 
-/// \brief Emits latency information in DC->CommentStream for \p Inst, based
+/// Emits latency information in DC->CommentStream for \p Inst, based
 /// on the information available in \p DC.
 static void emitLatency(LLVMDisasmContext *DC, const MCInst &Inst) {
   int Latency = getLatency(DC, Inst);
@@ -273,7 +277,8 @@ size_t LLVMDisasmInstruction(LLVMDisasmContextRef DCR, uint8_t *Bytes,
     SmallVector<char, 64> InsnStr;
     raw_svector_ostream OS(InsnStr);
     formatted_raw_ostream FormattedOS(OS);
-    IP->printInst(&Inst, FormattedOS, AnnotationsStr, *DC->getSubtargetInfo());
+    IP->printInst(&Inst, PC, AnnotationsStr, *DC->getSubtargetInfo(),
+                  FormattedOS);
 
     if (DC->getOptions() & LLVMDisassembler_Option_PrintLatency)
       emitLatency(DC, Inst);

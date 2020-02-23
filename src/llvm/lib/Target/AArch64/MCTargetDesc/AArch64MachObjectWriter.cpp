@@ -1,13 +1,13 @@
 //===-- AArch64MachObjectWriter.cpp - ARM Mach Object Writer --------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "MCTargetDesc/AArch64FixupKinds.h"
+#include "MCTargetDesc/AArch64MCExpr.h"
 #include "MCTargetDesc/AArch64MCTargetDesc.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/MachO.h"
@@ -38,8 +38,8 @@ class AArch64MachObjectWriter : public MCMachObjectTargetWriter {
                                   unsigned &Log2Size, const MCAssembler &Asm);
 
 public:
-  AArch64MachObjectWriter(uint32_t CPUType, uint32_t CPUSubtype)
-      : MCMachObjectTargetWriter(true /* is64Bit */, CPUType, CPUSubtype) {}
+  AArch64MachObjectWriter(uint32_t CPUType, uint32_t CPUSubtype, bool IsILP32)
+      : MCMachObjectTargetWriter(!IsILP32 /* is64Bit */, CPUType, CPUSubtype) {}
 
   void recordRelocation(MachObjectWriter *Writer, MCAssembler &Asm,
                         const MCAsmLayout &Layout, const MCFragment *Fragment,
@@ -55,7 +55,7 @@ bool AArch64MachObjectWriter::getAArch64FixupKindMachOInfo(
   RelocType = unsigned(MachO::ARM64_RELOC_UNSIGNED);
   Log2Size = ~0U;
 
-  switch ((unsigned)Fixup.getKind()) {
+  switch (Fixup.getTargetKind()) {
   default:
     return false;
 
@@ -321,33 +321,9 @@ void AArch64MachObjectWriter::recordRelocation(
     }
 
     const MCSymbol *Base = Asm.getAtom(*Symbol);
-
-    // If the symbol is a variable and we weren't able to get a Base for it
-    // (i.e., it's not in the symbol table associated with a section) resolve
-    // the relocation based its expansion instead.
-    if (Symbol->isVariable() && !Base) {
-      // If the evaluation is an absolute value, just use that directly
-      // to keep things easy.
-      int64_t Res;
-      if (Symbol->getVariableValue()->evaluateAsAbsolute(
-              Res, Layout, Writer->getSectionAddressMap())) {
-        FixedValue = Res;
-        return;
-      }
-
-      // FIXME: Will the Target we already have ever have any data in it
-      // we need to preserve and merge with the new Target? How about
-      // the FixedValue?
-      if (!Symbol->getVariableValue()->evaluateAsRelocatable(Target, &Layout,
-                                                             &Fixup)) {
-        Asm.getContext().reportError(Fixup.getLoc(),
-                                     "unable to resolve variable '" +
-                                         Symbol->getName() + "'");
-        return;
-      }
-      return recordRelocation(Writer, Asm, Layout, Fragment, Fixup, Target,
-                              FixedValue);
-    }
+    // If the symbol is a variable it can either be in a section and
+    // we have a base or it is absolute and should have been expanded.
+    assert(!Symbol->isVariable() || Base);
 
     // Relocations inside debug sections always use local relocations when
     // possible. This seems to be done because the debugger doesn't fully
@@ -386,19 +362,8 @@ void AArch64MachObjectWriter::recordRelocation(
         Value -= Writer->getFragmentAddress(Fragment, Layout) +
                  Fixup.getOffset() + (1ULL << Log2Size);
     } else {
-      // Resolve constant variables.
-      if (Symbol->isVariable()) {
-        int64_t Res;
-        if (Symbol->getVariableValue()->evaluateAsAbsolute(
-                Res, Layout, Writer->getSectionAddressMap())) {
-          FixedValue = Res;
-          return;
-        }
-      }
-      Asm.getContext().reportError(Fixup.getLoc(),
-                                  "unsupported relocation of variable '" +
-                                      Symbol->getName() + "'");
-      return;
+      llvm_unreachable(
+          "This constant variable should have been expanded during evaluation");
     }
   }
 
@@ -428,6 +393,46 @@ void AArch64MachObjectWriter::recordRelocation(
     Value = 0;
   }
 
+  if (Target.getRefKind() == AArch64MCExpr::VK_AUTH ||
+      Target.getRefKind() == AArch64MCExpr::VK_AUTHADDR) {
+    auto *Expr = cast<AArch64AuthMCExpr>(Fixup.getValue());
+
+    assert(Type == MachO::ARM64_RELOC_UNSIGNED);
+
+    if (IsPCRel) {
+      Asm.getContext().reportError(
+        Fixup.getLoc(), "invalid PC relative auth relocation");
+      return;
+    }
+
+    if (Log2Size != 3) {
+      Asm.getContext().reportError(
+        Fixup.getLoc(), "invalid auth relocation size, must be 8 bytes");
+      return;
+    }
+
+    if (Target.getSymB()) {
+      Asm.getContext().reportError(
+        Fixup.getLoc(), "invalid auth relocation, can't reference two symbols");
+      return;
+    }
+
+    uint16_t Discriminator = Expr->getDiscriminator();
+    AArch64PACKey::ID Key = Expr->getKey();
+
+    if (!isInt<32>(Value)) {
+      Asm.getContext().reportError(Fixup.getLoc(), "too wide addend '" +
+                                                       itostr(Value) +
+                                                       "' in auth relocation");
+      return;
+    }
+
+    Type = MachO::ARM64_RELOC_AUTHENTICATED_POINTER;
+    Value = (uint32_t(Value)) | (uint64_t(Discriminator) << 32) |
+            (uint64_t(Expr->hasAddressDiversity()) << 48) |
+            (uint64_t(Key) << 49) | (1ULL << 63);
+  }
+
   // If there's any addend left to handle, encode it in the instruction.
   FixedValue = Value;
 
@@ -439,10 +444,9 @@ void AArch64MachObjectWriter::recordRelocation(
   Writer->addRelocation(RelSymbol, Fragment->getParent(), MRE);
 }
 
-std::unique_ptr<MCObjectWriter>
-llvm::createAArch64MachObjectWriter(raw_pwrite_stream &OS, uint32_t CPUType,
-                                    uint32_t CPUSubtype) {
-  return createMachObjectWriter(
-      llvm::make_unique<AArch64MachObjectWriter>(CPUType, CPUSubtype), OS,
-      /*IsLittleEndian=*/true);
+std::unique_ptr<MCObjectTargetWriter>
+llvm::createAArch64MachObjectWriter(uint32_t CPUType, uint32_t CPUSubtype,
+                                    bool IsILP32) {
+  return std::make_unique<AArch64MachObjectWriter>(CPUType, CPUSubtype,
+                                                    IsILP32);
 }

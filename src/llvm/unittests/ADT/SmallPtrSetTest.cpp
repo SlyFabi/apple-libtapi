@@ -1,9 +1,8 @@
 //===- llvm/unittest/ADT/SmallPtrSetTest.cpp ------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -28,7 +27,7 @@ TEST(SmallPtrSetTest, Assignment) {
   (s2 = s1).insert(&buf[2]);
 
   // Self assign as well.
-  (s2 = s2).insert(&buf[3]);
+  (s2 = static_cast<SmallPtrSet<int *, 4> &>(s2)).insert(&buf[3]);
 
   s1 = s2;
   EXPECT_EQ(4U, s1.size());
@@ -56,7 +55,7 @@ TEST(SmallPtrSetTest, GrowthTest) {
 
   SmallPtrSet<int *, 4> s;
   typedef SmallPtrSet<int *, 4>::iterator iter;
-  
+
   s.insert(&buf[0]);
   s.insert(&buf[1]);
   s.insert(&buf[2]);
@@ -299,7 +298,7 @@ TEST(SmallPtrSetTest, dereferenceAndIterate) {
 
   // Sort.  We should hit the first element just once and the final element N
   // times.
-  std::sort(std::begin(Found), std::end(Found));
+  llvm::sort(std::begin(Found), std::end(Found));
   for (auto F = std::begin(Found), E = std::end(Found); F != E; ++F)
     EXPECT_EQ(F - Found + 1, *F);
 }
@@ -329,4 +328,42 @@ TEST(SmallPtrSetTest, ConstNonPtrTest) {
   IntSet.insert(Pair);
   EXPECT_EQ(IntSet.count(Pair), 1u);
   EXPECT_NE(IntSet.find(Pair), IntSet.end());
+}
+
+// Test equality comparison.
+TEST(SmallPtrSetTest, EqualityComparison) {
+  int buf[3];
+  for (int i = 0; i < 3; ++i)
+    buf[i] = 0;
+
+  SmallPtrSet<int *, 1> a;
+  a.insert(&buf[0]);
+  a.insert(&buf[1]);
+
+  SmallPtrSet<int *, 2> b;
+  b.insert(&buf[1]);
+  b.insert(&buf[0]);
+
+  SmallPtrSet<int *, 3> c;
+  c.insert(&buf[1]);
+  c.insert(&buf[2]);
+
+  SmallPtrSet<int *, 4> d;
+  d.insert(&buf[0]);
+
+  SmallPtrSet<int *, 5> e;
+  e.insert(&buf[0]);
+  e.insert(&buf[1]);
+  e.insert(&buf[2]);
+
+  EXPECT_EQ(a, b);
+  EXPECT_EQ(b, a);
+  EXPECT_NE(b, c);
+  EXPECT_NE(c, a);
+  EXPECT_NE(d, a);
+  EXPECT_NE(a, d);
+  EXPECT_NE(a, e);
+  EXPECT_NE(e, a);
+  EXPECT_NE(c, e);
+  EXPECT_NE(e, d);
 }

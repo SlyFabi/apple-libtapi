@@ -12,9 +12,7 @@ add_clang_executable(c-index-test
 
 set(INDEXSTORE_LIB)
 set(CINDEXTEST_LIBS)
-if(APPLE)
-  set(INDEXSTORE_LIB IndexStore)
-endif()
+set(INDEXSTORE_LIB IndexStore)
 
 if(NOT MSVC)
   set_property(
@@ -39,6 +37,7 @@ else()
     clangAST
     clangBasic
     clangCodeGen
+    clangDependencyScanning
     clangDirectoryWatcher
     clangFrontend
     clangIndex
@@ -53,7 +52,11 @@ set_target_properties(c-index-test
 
 # If libxml2 is available, make it available for c-index-test.
 if (CLANG_HAVE_LIBXML)
-  include_directories(SYSTEM ${LIBXML2_INCLUDE_DIR})
+  if ((CMAKE_OSX_SYSROOT) AND (EXISTS ${CMAKE_OSX_SYSROOT}/${LIBXML2_INCLUDE_DIR}))
+    include_directories(SYSTEM ${CMAKE_OSX_SYSROOT}/${LIBXML2_INCLUDE_DIR})
+  else()
+    include_directories(SYSTEM ${LIBXML2_INCLUDE_DIR})
+  endif()
   target_link_libraries(c-index-test PRIVATE ${LIBXML2_LIBRARIES})
 endif()
 
@@ -77,7 +80,7 @@ if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
     RUNTIME DESTINATION "${INSTALL_DESTINATION}"
     COMPONENT c-index-test)
 
-  if (NOT CMAKE_CONFIGURATION_TYPES) # don't add this for IDE's.
+  if (NOT LLVM_ENABLE_IDE)
     add_llvm_install_targets(install-c-index-test
                              DEPENDS c-index-test
                              COMPONENT c-index-test)

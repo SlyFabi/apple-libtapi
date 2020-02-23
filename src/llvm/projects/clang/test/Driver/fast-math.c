@@ -95,6 +95,14 @@
 // RUN:   | FileCheck --check-prefix=CHECK-NO-MATH-ERRNO %s
 // RUN: %clang -### -target x86_64-fuchsia -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-NO-MATH-ERRNO %s
+// RUN: %clang -### -target x86_64-linux-android -c %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-NO-MATH-ERRNO %s
+// RUN: %clang -### -target amdgcn-amd-amdhsa -c %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-NO-MATH-ERRNO %s
+// RUN: %clang -### -target amdgcn-amd-amdpal -c %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-NO-MATH-ERRNO %s
+// RUN: %clang -### -target amdgcn-mesa-mesa3d -c %s 2>&1   \
+// RUN:   | FileCheck --check-prefix=CHECK-NO-MATH-ERRNO %s
 //
 // Check that -ffast-math disables -fmath-errno, and -fno-fast-math merely
 // preserves the target default. Also check various flag set operations between
@@ -162,11 +170,11 @@
 // RUN: %clang -### -fno-fast-math -ffast-math -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-FAST-MATH %s
 // RUN: %clang -### -funsafe-math-optimizations -ffinite-math-only \
-// RUN:     -fno-math-errno -ffp-contract=fast -c %s 2>&1 \
+// RUN:     -fno-math-errno -ffp-contract=fast -fno-rounding-math -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-FAST-MATH %s
 // RUN: %clang -### -fno-honor-infinities -fno-honor-nans -fno-math-errno \
 // RUN:     -fassociative-math -freciprocal-math -fno-signed-zeros \
-// RUN:     -fno-trapping-math -ffp-contract=fast -c %s 2>&1 \
+// RUN:     -fno-trapping-math -ffp-contract=fast -fno-rounding-math -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-FAST-MATH %s
 // CHECK-FAST-MATH: "-cc1"
 // CHECK-FAST-MATH: "-ffast-math"
@@ -287,3 +295,27 @@
 // RUN: %clang -### -ftrapping-math -fno-trapping-math -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-NO-TRAPPING-MATH %s
 // CHECK-NO-TRAPPING-MATH: "-fno-trapping-math"
+
+// This isn't fast-math, but the option is handled in the same place as other FP params.
+// Last option wins, and strict behavior is assumed by default. 
+
+// RUN: %clang -### -fno-strict-float-cast-overflow -c %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-FPOV-WORKAROUND %s
+// CHECK-FPOV-WORKAROUND: "-cc1"
+// CHECK-FPOV-WORKAROUND: "-fno-strict-float-cast-overflow"
+
+// RUN: %clang -### -c %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-FPOV-WORKAROUND-DEFAULT %s
+// CHECK-FPOV-WORKAROUND-DEFAULT: "-cc1"
+// CHECK-FPOV-WORKAROUND-DEFAULT-NOT: "strict-float-cast-overflow"
+
+// RUN: %clang -### -fstrict-float-cast-overflow -c %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-NO-FPOV-WORKAROUND %s
+// CHECK-NO-FPOV-WORKAROUND: "-cc1"
+// CHECK-NO-FPOV-WORKAROUND-NOT: "strict-float-cast-overflow"
+
+// RUN: %clang -### -fno-strict-float-cast-overflow -fstrict-float-cast-overflow -c %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-NO-FPOV-WORKAROUND-OVERRIDE %s
+// CHECK-NO-FPOV-WORKAROUND-OVERRIDE: "-cc1"
+// CHECK-NO-FPOV-WORKAROUND-OVERRIDE-NOT: "strict-float-cast-overflow"
+

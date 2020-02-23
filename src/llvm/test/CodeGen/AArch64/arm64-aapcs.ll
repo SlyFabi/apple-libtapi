@@ -5,27 +5,27 @@
 ; CHECK-LABEL: @test_i128_align
 define i128 @test_i128_align(i32, i128 %arg, i32 %after) {
   store i32 %after, i32* @var, align 4
-; CHECK: str w4, [{{x[0-9]+}}, :lo12:var]
+; CHECK-DAG: str w4, [{{x[0-9]+}}, :lo12:var]
 
   ret i128 %arg
-; CHECK: mov x0, x2
-; CHECK: mov x1, x3
+; CHECK-DAG: mov x0, x2
+; CHECK-DAG: mov x1, x3
 }
 
 ; CHECK-LABEL: @test_i64x2_align
 define [2 x i64] @test_i64x2_align(i32, [2 x i64] %arg, i32 %after) {
   store i32 %after, i32* @var, align 4
-; CHECK: str w3, [{{x[0-9]+}}, :lo12:var]
+; CHECK-DAG: str w3, [{{x[0-9]+}}, :lo12:var]
 
   ret [2 x i64] %arg
-; CHECK: mov x0, x1
+; CHECK-DAG: mov x0, x1
 ; CHECK: mov x1, x2
 }
 
 @var64 = global i64 0, align 8
 
 ; Check stack slots are 64-bit at all times.
-define void @test_stack_slots([8 x i32], i1 %bool, i8 %char, i16 %short,
+define void @test_stack_slots([8 x i64], i1 %bool, i8 %char, i16 %short,
                                 i32 %int, i64 %long) {
 ; CHECK-LABEL: test_stack_slots:
 ; CHECK-DAG: ldr w[[ext1:[0-9]+]], [sp, #24]
@@ -63,8 +63,8 @@ define void @test_stack_slots([8 x i32], i1 %bool, i8 %char, i16 %short,
 define void @test_extension(i1 %bool, i8 %char, i16 %short, i32 %int) {
   %ext_bool = zext i1 %bool to i64
   store volatile i64 %ext_bool, i64* @var64
-; CHECK: and w[[EXT:[0-9]+]], w0, #0x1
-; CHECK: str x[[EXT]], [{{x[0-9]+}}, :lo12:var64]
+; CHECK: and [[EXT:x[0-9]+]], x0, #0x1
+; CHECK: str [[EXT]], [{{x[0-9]+}}, :lo12:var64]
 
   %ext_char = sext i8 %char to i64
   store volatile i64 %ext_char, i64* @var64
@@ -73,8 +73,8 @@ define void @test_extension(i1 %bool, i8 %char, i16 %short, i32 %int) {
 
   %ext_short = zext i16 %short to i64
   store volatile i64 %ext_short, i64* @var64
-; CHECK: and w[[EXT:[0-9]+]], w2, #0xffff
-; CHECK: str x[[EXT]], [{{x[0-9]+}}, :lo12:var64]
+; CHECK: and [[EXT:x[0-9]+]], x2, #0xffff
+; CHECK: str [[EXT]], [{{x[0-9]+}}, :lo12:var64]
 
   %ext_int = zext i32 %int to i64
   store volatile i64 %ext_int, i64* @var64
@@ -91,7 +91,7 @@ declare void @variadic(i32 %a, ...)
 define void @test_variadic() {
   call void(i32, ...) @variadic(i32 0, i64 1, double 2.0)
 ; CHECK: fmov d0, #2.0
-; CHECK: orr w1, wzr, #0x1
+; CHECK: mov w1, #1
 ; CHECK: bl variadic
   ret void
 }

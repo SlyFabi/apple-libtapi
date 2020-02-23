@@ -1,9 +1,8 @@
 //===- CoroCleanup.cpp - Coroutine Cleanup Pass ---------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 // This pass lowers all remaining coroutine intrinsics.
@@ -50,7 +49,7 @@ static void lowerSubFn(IRBuilder<> &Builder, CoroSubFnInst *SubFn) {
   Builder.SetInsertPoint(SubFn);
   auto *FramePtr = Builder.CreateBitCast(FrameRaw, FramePtrTy);
   auto *Gep = Builder.CreateConstInBoundsGEP2_32(FrameTy, FramePtr, 0, Index);
-  auto *Load = Builder.CreateLoad(Gep);
+  auto *Load = Builder.CreateLoad(FrameTy->getElementType(Index), Gep);
 
   SubFn->replaceAllUsesWith(Load);
 }
@@ -100,11 +99,11 @@ bool Lowerer::lowerRemainingCoroIntrinsics(Function &F) {
 
 namespace {
 
-struct CoroCleanup : FunctionPass {
+struct CoroCleanupLegacy : FunctionPass {
   static char ID; // Pass identification, replacement for typeid
 
-  CoroCleanup() : FunctionPass(ID) {
-    initializeCoroCleanupPass(*PassRegistry::getPassRegistry());
+  CoroCleanupLegacy() : FunctionPass(ID) {
+    initializeCoroCleanupLegacyPass(*PassRegistry::getPassRegistry());
   }
 
   std::unique_ptr<Lowerer> L;
@@ -116,7 +115,7 @@ struct CoroCleanup : FunctionPass {
                                      "llvm.coro.subfn.addr", "llvm.coro.free",
                                      "llvm.coro.id", "llvm.coro.id.retcon",
                                      "llvm.coro.id.retcon.once"}))
-      L = llvm::make_unique<Lowerer>(M);
+      L = std::make_unique<Lowerer>(M);
     return false;
   }
 
@@ -133,8 +132,8 @@ struct CoroCleanup : FunctionPass {
 };
 }
 
-char CoroCleanup::ID = 0;
-INITIALIZE_PASS(CoroCleanup, "coro-cleanup",
+char CoroCleanupLegacy::ID = 0;
+INITIALIZE_PASS(CoroCleanupLegacy, "coro-cleanup",
                 "Lower all coroutine related intrinsics", false, false)
 
-Pass *llvm::createCoroCleanupPass() { return new CoroCleanup(); }
+Pass *llvm::createCoroCleanupLegacyPass() { return new CoroCleanupLegacy(); }

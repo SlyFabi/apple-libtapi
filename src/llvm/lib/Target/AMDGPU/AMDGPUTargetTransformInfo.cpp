@@ -1,9 +1,8 @@
 //===- AMDGPUTargetTransformInfo.cpp - AMDGPU specific TTI pass -----------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -17,12 +16,12 @@
 
 #include "AMDGPUTargetTransformInfo.h"
 #include "AMDGPUSubtarget.h"
+#include "Utils/AMDGPUBaseInfo.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
-#include "llvm/CodeGen/MachineValueType.h"
 #include "llvm/CodeGen/ValueTypes.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
@@ -43,6 +42,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MachineValueType.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include <algorithm>
@@ -57,7 +57,7 @@ using namespace llvm;
 static cl::opt<unsigned> UnrollThresholdPrivate(
   "amdgpu-unroll-threshold-private",
   cl::desc("Unroll threshold for AMDGPU if private memory used in a loop"),
-  cl::init(2500), cl::Hidden);
+  cl::init(2700), cl::Hidden);
 
 static cl::opt<unsigned> UnrollThresholdLocal(
   "amdgpu-unroll-threshold-local",
@@ -90,7 +90,8 @@ static bool dependsOnLocalPhi(const Loop *L, const Value *Cond,
 
 void AMDGPUTTIImpl::getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
                                             TTI::UnrollingPreferences &UP) {
-  UP.Threshold = 300; // Twice the default.
+  const Function &F = *L->getHeader()->getParent();
+  UP.Threshold = AMDGPU::getIntegerAttribute(F, "amdgpu-unroll-threshold", 300);
   UP.MaxCount = std::numeric_limits<unsigned>::max();
   UP.Partial = true;
 
@@ -101,7 +102,6 @@ void AMDGPUTTIImpl::getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
   unsigned ThresholdPrivate = UnrollThresholdPrivate;
   unsigned ThresholdLocal = UnrollThresholdLocal;
   unsigned MaxBoost = std::max(ThresholdPrivate, ThresholdLocal);
-  AMDGPUAS ASST = ST->getAMDGPUAS();
   for (const BasicBlock *BB : L->getBlocks()) {
     const DataLayout &DL = BB->getModule()->getDataLayout();
     unsigned LocalGEPsSeen = 0;
@@ -118,13 +118,16 @@ void AMDGPUTTIImpl::getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
       // Add a small bonus for each of such "if" statements.
       if (const BranchInst *Br = dyn_cast<BranchInst>(&I)) {
         if (UP.Threshold < MaxBoost && Br->isConditional()) {
-          if (L->isLoopExiting(Br->getSuccessor(0)) ||
-              L->isLoopExiting(Br->getSuccessor(1)))
+          BasicBlock *Succ0 = Br->getSuccessor(0);
+          BasicBlock *Succ1 = Br->getSuccessor(1);
+          if ((L->contains(Succ0) && L->isLoopExiting(Succ0)) ||
+              (L->contains(Succ1) && L->isLoopExiting(Succ1)))
             continue;
           if (dependsOnLocalPhi(L, Br->getCondition())) {
             UP.Threshold += UnrollThresholdIf;
-            DEBUG(dbgs() << "Set unroll threshold " << UP.Threshold
-                         << " for loop:\n" << *L << " due to " << *Br << '\n');
+            LLVM_DEBUG(dbgs() << "Set unroll threshold " << UP.Threshold
+                              << " for loop:\n"
+                              << *L << " due to " << *Br << '\n');
             if (UP.Threshold >= MaxBoost)
               return;
           }
@@ -138,9 +141,9 @@ void AMDGPUTTIImpl::getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
 
       unsigned AS = GEP->getAddressSpace();
       unsigned Threshold = 0;
-      if (AS == ASST.PRIVATE_ADDRESS)
+      if (AS == AMDGPUAS::PRIVATE_ADDRESS)
         Threshold = ThresholdPrivate;
-      else if (AS == ASST.LOCAL_ADDRESS)
+      else if (AS == AMDGPUAS::LOCAL_ADDRESS || AS == AMDGPUAS::REGION_ADDRESS)
         Threshold = ThresholdLocal;
       else
         continue;
@@ -148,7 +151,7 @@ void AMDGPUTTIImpl::getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
       if (UP.Threshold >= Threshold)
         continue;
 
-      if (AS == ASST.PRIVATE_ADDRESS) {
+      if (AS == AMDGPUAS::PRIVATE_ADDRESS) {
         const Value *Ptr = GEP->getPointerOperand();
         const AllocaInst *Alloca =
             dyn_cast<AllocaInst>(GetUnderlyingObject(Ptr, DL));
@@ -158,7 +161,8 @@ void AMDGPUTTIImpl::getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
         unsigned AllocaSize = Ty->isSized() ? DL.getTypeAllocSize(Ty) : 0;
         if (AllocaSize > MaxAlloca)
           continue;
-      } else if (AS == ASST.LOCAL_ADDRESS) {
+      } else if (AS == AMDGPUAS::LOCAL_ADDRESS ||
+                 AS == AMDGPUAS::REGION_ADDRESS) {
         LocalGEPsSeen++;
         // Inhibit unroll for local memory if we have seen addressing not to
         // a variable, most likely we will be unable to combine it.
@@ -200,86 +204,101 @@ void AMDGPUTTIImpl::getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
       // Don't use the maximum allowed value here as it will make some
       // programs way too big.
       UP.Threshold = Threshold;
-      DEBUG(dbgs() << "Set unroll threshold " << Threshold << " for loop:\n"
-                   << *L << " due to " << *GEP << '\n');
+      LLVM_DEBUG(dbgs() << "Set unroll threshold " << Threshold
+                        << " for loop:\n"
+                        << *L << " due to " << *GEP << '\n');
       if (UP.Threshold >= MaxBoost)
         return;
     }
   }
 }
 
-unsigned AMDGPUTTIImpl::getHardwareNumberOfRegisters(bool Vec) const {
+unsigned GCNTTIImpl::getHardwareNumberOfRegisters(bool Vec) const {
   // The concept of vector registers doesn't really exist. Some packed vector
   // operations operate on the normal 32-bit registers.
-
-  // Number of VGPRs on SI.
-  if (ST->getGeneration() >= AMDGPUSubtarget::SOUTHERN_ISLANDS)
-    return 256;
-
-  return 4 * 128; // XXX - 4 channels. Should these count as vector instead?
+  return 256;
 }
 
-unsigned AMDGPUTTIImpl::getNumberOfRegisters(bool Vec) const {
+unsigned GCNTTIImpl::getNumberOfRegisters(bool Vec) const {
   // This is really the number of registers to fill when vectorizing /
   // interleaving loops, so we lie to avoid trying to use all registers.
   return getHardwareNumberOfRegisters(Vec) >> 3;
 }
 
-unsigned AMDGPUTTIImpl::getRegisterBitWidth(bool Vector) const {
+unsigned GCNTTIImpl::getRegisterBitWidth(bool Vector) const {
   return 32;
 }
 
-unsigned AMDGPUTTIImpl::getMinVectorRegisterBitWidth() const {
+unsigned GCNTTIImpl::getMinVectorRegisterBitWidth() const {
   return 32;
 }
 
-unsigned AMDGPUTTIImpl::getLoadStoreVecRegBitWidth(unsigned AddrSpace) const {
-  AMDGPUAS AS = ST->getAMDGPUAS();
-  if (AddrSpace == AS.GLOBAL_ADDRESS ||
-      AddrSpace == AS.CONSTANT_ADDRESS ||
-      AddrSpace == AS.FLAT_ADDRESS)
+unsigned GCNTTIImpl::getLoadVectorFactor(unsigned VF, unsigned LoadSize,
+                                            unsigned ChainSizeInBytes,
+                                            VectorType *VecTy) const {
+  unsigned VecRegBitWidth = VF * LoadSize;
+  if (VecRegBitWidth > 128 && VecTy->getScalarSizeInBits() < 32)
+    // TODO: Support element-size less than 32bit?
+    return 128 / LoadSize;
+
+  return VF;
+}
+
+unsigned GCNTTIImpl::getStoreVectorFactor(unsigned VF, unsigned StoreSize,
+                                             unsigned ChainSizeInBytes,
+                                             VectorType *VecTy) const {
+  unsigned VecRegBitWidth = VF * StoreSize;
+  if (VecRegBitWidth > 128)
+    return 128 / StoreSize;
+
+  return VF;
+}
+
+unsigned GCNTTIImpl::getLoadStoreVecRegBitWidth(unsigned AddrSpace) const {
+  if (AddrSpace == AMDGPUAS::GLOBAL_ADDRESS ||
+      AddrSpace == AMDGPUAS::CONSTANT_ADDRESS ||
+      AddrSpace == AMDGPUAS::CONSTANT_ADDRESS_32BIT ||
+      AddrSpace == AMDGPUAS::BUFFER_FAT_POINTER) {
+    return 512;
+  }
+
+  if (AddrSpace == AMDGPUAS::FLAT_ADDRESS ||
+      AddrSpace == AMDGPUAS::LOCAL_ADDRESS ||
+      AddrSpace == AMDGPUAS::REGION_ADDRESS)
     return 128;
-  if (AddrSpace == AS.LOCAL_ADDRESS ||
-      AddrSpace == AS.REGION_ADDRESS)
-    return 64;
-  if (AddrSpace == AS.PRIVATE_ADDRESS)
+
+  if (AddrSpace == AMDGPUAS::PRIVATE_ADDRESS)
     return 8 * ST->getMaxPrivateElementSize();
 
-  if (ST->getGeneration() <= AMDGPUSubtarget::NORTHERN_ISLANDS &&
-      (AddrSpace == AS.PARAM_D_ADDRESS ||
-      AddrSpace == AS.PARAM_I_ADDRESS ||
-      (AddrSpace >= AS.CONSTANT_BUFFER_0 &&
-      AddrSpace <= AS.CONSTANT_BUFFER_15)))
-    return 128;
   llvm_unreachable("unhandled address space");
 }
 
-bool AMDGPUTTIImpl::isLegalToVectorizeMemChain(unsigned ChainSizeInBytes,
+bool GCNTTIImpl::isLegalToVectorizeMemChain(unsigned ChainSizeInBytes,
                                                unsigned Alignment,
                                                unsigned AddrSpace) const {
   // We allow vectorization of flat stores, even though we may need to decompose
   // them later if they may access private memory. We don't have enough context
   // here, and legalization can handle it.
-  if (AddrSpace == ST->getAMDGPUAS().PRIVATE_ADDRESS) {
+  if (AddrSpace == AMDGPUAS::PRIVATE_ADDRESS) {
     return (Alignment >= 4 || ST->hasUnalignedScratchAccess()) &&
       ChainSizeInBytes <= ST->getMaxPrivateElementSize();
   }
   return true;
 }
 
-bool AMDGPUTTIImpl::isLegalToVectorizeLoadChain(unsigned ChainSizeInBytes,
+bool GCNTTIImpl::isLegalToVectorizeLoadChain(unsigned ChainSizeInBytes,
                                                 unsigned Alignment,
                                                 unsigned AddrSpace) const {
   return isLegalToVectorizeMemChain(ChainSizeInBytes, Alignment, AddrSpace);
 }
 
-bool AMDGPUTTIImpl::isLegalToVectorizeStoreChain(unsigned ChainSizeInBytes,
+bool GCNTTIImpl::isLegalToVectorizeStoreChain(unsigned ChainSizeInBytes,
                                                  unsigned Alignment,
                                                  unsigned AddrSpace) const {
   return isLegalToVectorizeMemChain(ChainSizeInBytes, Alignment, AddrSpace);
 }
 
-unsigned AMDGPUTTIImpl::getMaxInterleaveFactor(unsigned VF) {
+unsigned GCNTTIImpl::getMaxInterleaveFactor(unsigned VF) {
   // Disable unrolling if the loop is not vectorized.
   // TODO: Enable this again.
   if (VF == 1)
@@ -288,11 +307,16 @@ unsigned AMDGPUTTIImpl::getMaxInterleaveFactor(unsigned VF) {
   return 8;
 }
 
-bool AMDGPUTTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
+bool GCNTTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
                                        MemIntrinsicInfo &Info) const {
   switch (Inst->getIntrinsicID()) {
   case Intrinsic::amdgcn_atomic_inc:
-  case Intrinsic::amdgcn_atomic_dec: {
+  case Intrinsic::amdgcn_atomic_dec:
+  case Intrinsic::amdgcn_ds_ordered_add:
+  case Intrinsic::amdgcn_ds_ordered_swap:
+  case Intrinsic::amdgcn_ds_fadd:
+  case Intrinsic::amdgcn_ds_fmin:
+  case Intrinsic::amdgcn_ds_fmax: {
     auto *Ordering = dyn_cast<ConstantInt>(Inst->getArgOperand(2));
     auto *Volatile = dyn_cast<ConstantInt>(Inst->getArgOperand(4));
     if (!Ordering || !Volatile)
@@ -314,10 +338,13 @@ bool AMDGPUTTIImpl::getTgtMemIntrinsic(IntrinsicInst *Inst,
   }
 }
 
-int AMDGPUTTIImpl::getArithmeticInstrCost(
-    unsigned Opcode, Type *Ty, TTI::OperandValueKind Opd1Info,
-    TTI::OperandValueKind Opd2Info, TTI::OperandValueProperties Opd1PropInfo,
-    TTI::OperandValueProperties Opd2PropInfo, ArrayRef<const Value *> Args ) {
+int GCNTTIImpl::getArithmeticInstrCost(unsigned Opcode, Type *Ty,
+                                       TTI::OperandValueKind Opd1Info,
+                                       TTI::OperandValueKind Opd2Info,
+                                       TTI::OperandValueProperties Opd1PropInfo,
+                                       TTI::OperandValueProperties Opd2PropInfo,
+                                       ArrayRef<const Value *> Args,
+                                       const Instruction *CxtI) {
   EVT OrigTy = TLI->getValueType(DL, Ty);
   if (!OrigTy.isSimple()) {
     return BaseT::getArithmeticInstrCost(Opcode, Ty, Opd1Info, Opd2Info,
@@ -342,6 +369,9 @@ int AMDGPUTTIImpl::getArithmeticInstrCost(
     if (SLT == MVT::i64)
       return get64BitInstrCost() * LT.first * NElts;
 
+    if (ST->has16BitInsts() && SLT == MVT::i16)
+      NElts = (NElts + 1) / 2;
+
     // i32
     return getFullRateInstrCost() * LT.first * NElts;
   case ISD::ADD:
@@ -349,10 +379,13 @@ int AMDGPUTTIImpl::getArithmeticInstrCost(
   case ISD::AND:
   case ISD::OR:
   case ISD::XOR:
-    if (SLT == MVT::i64){
+    if (SLT == MVT::i64) {
       // and, or and xor are typically split into 2 VALU instructions.
       return 2 * getFullRateInstrCost() * LT.first * NElts;
     }
+
+    if (ST->has16BitInsts() && SLT == MVT::i16)
+      NElts = (NElts + 1) / 2;
 
     return LT.first * NElts * getFullRateInstrCost();
   case ISD::MUL: {
@@ -362,6 +395,9 @@ int AMDGPUTTIImpl::getArithmeticInstrCost(
       return (4 * QuarterRateCost + (2 * 2) * FullRateCost) * LT.first * NElts;
     }
 
+    if (ST->has16BitInsts() && SLT == MVT::i16)
+      NElts = (NElts + 1) / 2;
+
     // i32
     return QuarterRateCost * NElts * LT.first;
   }
@@ -370,6 +406,9 @@ int AMDGPUTTIImpl::getArithmeticInstrCost(
   case ISD::FMUL:
     if (SLT == MVT::f64)
       return LT.first * NElts * get64BitInstrCost();
+
+    if (ST->has16BitInsts() && SLT == MVT::f16)
+      NElts = (NElts + 1) / 2;
 
     if (SLT == MVT::f32 || SLT == MVT::f16)
       return LT.first * NElts * getFullRateInstrCost();
@@ -381,7 +420,7 @@ int AMDGPUTTIImpl::getArithmeticInstrCost(
     if (SLT == MVT::f64) {
       int Cost = 4 * get64BitInstrCost() + 7 * getQuarterRateInstrCost();
       // Add cost of workaround.
-      if (ST->getGeneration() == AMDGPUSubtarget::SOUTHERN_ISLANDS)
+      if (!ST->hasUsableDivScaleConditionOutput())
         Cost += 3 * getFullRateInstrCost();
 
       return LT.first * Cost * NElts;
@@ -389,7 +428,7 @@ int AMDGPUTTIImpl::getArithmeticInstrCost(
 
     if (!Args.empty() && match(Args[0], PatternMatch::m_FPOne())) {
       // TODO: This is more complicated, unsafe flags etc.
-      if ((SLT == MVT::f32 && !ST->hasFP32Denormals()) ||
+      if ((SLT == MVT::f32 && !HasFP32Denormals) ||
           (SLT == MVT::f16 && ST->has16BitInsts())) {
         return LT.first * getQuarterRateInstrCost() * NElts;
       }
@@ -408,7 +447,7 @@ int AMDGPUTTIImpl::getArithmeticInstrCost(
     if (SLT == MVT::f32 || SLT == MVT::f16) {
       int Cost = 7 * getFullRateInstrCost() + 1 * getQuarterRateInstrCost();
 
-      if (!ST->hasFP32Denormals()) {
+      if (!HasFP32Denormals) {
         // FP mode switches.
         Cost += 2 * getFullRateInstrCost();
       }
@@ -424,7 +463,50 @@ int AMDGPUTTIImpl::getArithmeticInstrCost(
                                        Opd1PropInfo, Opd2PropInfo);
 }
 
-unsigned AMDGPUTTIImpl::getCFInstrCost(unsigned Opcode) {
+template <typename T>
+int GCNTTIImpl::getIntrinsicInstrCost(Intrinsic::ID ID, Type *RetTy,
+                                      ArrayRef<T *> Args,
+                                      FastMathFlags FMF, unsigned VF) {
+  if (ID != Intrinsic::fma)
+    return BaseT::getIntrinsicInstrCost(ID, RetTy, Args, FMF, VF);
+
+  EVT OrigTy = TLI->getValueType(DL, RetTy);
+  if (!OrigTy.isSimple()) {
+    return BaseT::getIntrinsicInstrCost(ID, RetTy, Args, FMF, VF);
+  }
+
+  // Legalize the type.
+  std::pair<int, MVT> LT = TLI->getTypeLegalizationCost(DL, RetTy);
+
+  unsigned NElts = LT.second.isVector() ?
+    LT.second.getVectorNumElements() : 1;
+
+  MVT::SimpleValueType SLT = LT.second.getScalarType().SimpleTy;
+
+  if (SLT == MVT::f64)
+    return LT.first * NElts * get64BitInstrCost();
+
+  if (ST->has16BitInsts() && SLT == MVT::f16)
+    NElts = (NElts + 1) / 2;
+
+  return LT.first * NElts * (ST->hasFastFMAF32() ? getHalfRateInstrCost()
+                                                 : getQuarterRateInstrCost());
+}
+
+int GCNTTIImpl::getIntrinsicInstrCost(Intrinsic::ID ID, Type *RetTy,
+                                      ArrayRef<Value*> Args, FastMathFlags FMF,
+                                      unsigned VF) {
+  return getIntrinsicInstrCost<Value>(ID, RetTy, Args, FMF, VF);
+}
+
+int GCNTTIImpl::getIntrinsicInstrCost(Intrinsic::ID ID, Type *RetTy,
+                                      ArrayRef<Type *> Tys, FastMathFlags FMF,
+                                      unsigned ScalarizationCostPassed) {
+  return getIntrinsicInstrCost<Type>(ID, RetTy, Tys, FMF,
+                                     ScalarizationCostPassed);
+}
+
+unsigned GCNTTIImpl::getCFInstrCost(unsigned Opcode) {
   // XXX - For some reason this isn't called for switch.
   switch (Opcode) {
   case Instruction::Br:
@@ -435,7 +517,38 @@ unsigned AMDGPUTTIImpl::getCFInstrCost(unsigned Opcode) {
   }
 }
 
-int AMDGPUTTIImpl::getVectorInstrCost(unsigned Opcode, Type *ValTy,
+int GCNTTIImpl::getArithmeticReductionCost(unsigned Opcode, Type *Ty,
+                                              bool IsPairwise) {
+  EVT OrigTy = TLI->getValueType(DL, Ty);
+
+  // Computes cost on targets that have packed math instructions(which support
+  // 16-bit types only).
+  if (IsPairwise ||
+      !ST->hasVOP3PInsts() ||
+      OrigTy.getScalarSizeInBits() != 16)
+    return BaseT::getArithmeticReductionCost(Opcode, Ty, IsPairwise);
+
+  std::pair<int, MVT> LT = TLI->getTypeLegalizationCost(DL, Ty);
+  return LT.first * getFullRateInstrCost();
+}
+
+int GCNTTIImpl::getMinMaxReductionCost(Type *Ty, Type *CondTy,
+                                          bool IsPairwise,
+                                          bool IsUnsigned) {
+  EVT OrigTy = TLI->getValueType(DL, Ty);
+
+  // Computes cost on targets that have packed math instructions(which support
+  // 16-bit types only).
+  if (IsPairwise ||
+      !ST->hasVOP3PInsts() ||
+      OrigTy.getScalarSizeInBits() != 16)
+    return BaseT::getMinMaxReductionCost(Ty, CondTy, IsPairwise, IsUnsigned);
+
+  std::pair<int, MVT> LT = TLI->getTypeLegalizationCost(DL, Ty);
+  return LT.first * getHalfRateInstrCost();
+}
+
+int GCNTTIImpl::getVectorInstrCost(unsigned Opcode, Type *ValTy,
                                       unsigned Index) {
   switch (Opcode) {
   case Instruction::ExtractElement:
@@ -460,52 +573,7 @@ int AMDGPUTTIImpl::getVectorInstrCost(unsigned Opcode, Type *ValTy,
   }
 }
 
-static bool isIntrinsicSourceOfDivergence(const IntrinsicInst *I) {
-  switch (I->getIntrinsicID()) {
-  case Intrinsic::amdgcn_workitem_id_x:
-  case Intrinsic::amdgcn_workitem_id_y:
-  case Intrinsic::amdgcn_workitem_id_z:
-  case Intrinsic::amdgcn_interp_mov:
-  case Intrinsic::amdgcn_interp_p1:
-  case Intrinsic::amdgcn_interp_p2:
-  case Intrinsic::amdgcn_mbcnt_hi:
-  case Intrinsic::amdgcn_mbcnt_lo:
-  case Intrinsic::r600_read_tidig_x:
-  case Intrinsic::r600_read_tidig_y:
-  case Intrinsic::r600_read_tidig_z:
-  case Intrinsic::amdgcn_atomic_inc:
-  case Intrinsic::amdgcn_atomic_dec:
-  case Intrinsic::amdgcn_image_atomic_swap:
-  case Intrinsic::amdgcn_image_atomic_add:
-  case Intrinsic::amdgcn_image_atomic_sub:
-  case Intrinsic::amdgcn_image_atomic_smin:
-  case Intrinsic::amdgcn_image_atomic_umin:
-  case Intrinsic::amdgcn_image_atomic_smax:
-  case Intrinsic::amdgcn_image_atomic_umax:
-  case Intrinsic::amdgcn_image_atomic_and:
-  case Intrinsic::amdgcn_image_atomic_or:
-  case Intrinsic::amdgcn_image_atomic_xor:
-  case Intrinsic::amdgcn_image_atomic_inc:
-  case Intrinsic::amdgcn_image_atomic_dec:
-  case Intrinsic::amdgcn_image_atomic_cmpswap:
-  case Intrinsic::amdgcn_buffer_atomic_swap:
-  case Intrinsic::amdgcn_buffer_atomic_add:
-  case Intrinsic::amdgcn_buffer_atomic_sub:
-  case Intrinsic::amdgcn_buffer_atomic_smin:
-  case Intrinsic::amdgcn_buffer_atomic_umin:
-  case Intrinsic::amdgcn_buffer_atomic_smax:
-  case Intrinsic::amdgcn_buffer_atomic_umax:
-  case Intrinsic::amdgcn_buffer_atomic_and:
-  case Intrinsic::amdgcn_buffer_atomic_or:
-  case Intrinsic::amdgcn_buffer_atomic_xor:
-  case Intrinsic::amdgcn_buffer_atomic_cmpswap:
-  case Intrinsic::amdgcn_ps_live:
-  case Intrinsic::amdgcn_ds_swizzle:
-    return true;
-  default:
-    return false;
-  }
-}
+
 
 static bool isArgPassedInSGPR(const Argument *A) {
   const Function *F = A->getParent();
@@ -535,18 +603,19 @@ static bool isArgPassedInSGPR(const Argument *A) {
 
 /// \returns true if the result of the value could potentially be
 /// different across workitems in a wavefront.
-bool AMDGPUTTIImpl::isSourceOfDivergence(const Value *V) const {
+bool GCNTTIImpl::isSourceOfDivergence(const Value *V) const {
   if (const Argument *A = dyn_cast<Argument>(V))
     return !isArgPassedInSGPR(A);
 
-  // Loads from the private address space are divergent, because threads
-  // can execute the load instruction with the same inputs and get different
-  // results.
+  // Loads from the private and flat address spaces are divergent, because
+  // threads can execute the load instruction with the same inputs and get
+  // different results.
   //
   // All other loads are not divergent, because if threads issue loads with the
   // same arguments, they will always get the same result.
   if (const LoadInst *Load = dyn_cast<LoadInst>(V))
-    return Load->getPointerAddressSpace() == ST->getAMDGPUAS().PRIVATE_ADDRESS;
+    return Load->getPointerAddressSpace() == AMDGPUAS::PRIVATE_ADDRESS ||
+           Load->getPointerAddressSpace() == AMDGPUAS::FLAT_ADDRESS;
 
   // Atomics are divergent because they are executed sequentially: when an
   // atomic operation refers to the same address in each thread, then each
@@ -556,7 +625,7 @@ bool AMDGPUTTIImpl::isSourceOfDivergence(const Value *V) const {
     return true;
 
   if (const IntrinsicInst *Intrinsic = dyn_cast<IntrinsicInst>(V))
-    return isIntrinsicSourceOfDivergence(Intrinsic);
+    return AMDGPU::isIntrinsicSourceOfDivergence(Intrinsic->getIntrinsicID());
 
   // Assume all function calls are a source of divergence.
   if (isa<CallInst>(V) || isa<InvokeInst>(V))
@@ -565,20 +634,77 @@ bool AMDGPUTTIImpl::isSourceOfDivergence(const Value *V) const {
   return false;
 }
 
-bool AMDGPUTTIImpl::isAlwaysUniform(const Value *V) const {
+bool GCNTTIImpl::isAlwaysUniform(const Value *V) const {
   if (const IntrinsicInst *Intrinsic = dyn_cast<IntrinsicInst>(V)) {
     switch (Intrinsic->getIntrinsicID()) {
     default:
       return false;
     case Intrinsic::amdgcn_readfirstlane:
     case Intrinsic::amdgcn_readlane:
+    case Intrinsic::amdgcn_icmp:
+    case Intrinsic::amdgcn_fcmp:
       return true;
     }
   }
   return false;
 }
 
-unsigned AMDGPUTTIImpl::getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Index,
+bool GCNTTIImpl::collectFlatAddressOperands(SmallVectorImpl<int> &OpIndexes,
+                                            Intrinsic::ID IID) const {
+  switch (IID) {
+  case Intrinsic::amdgcn_atomic_inc:
+  case Intrinsic::amdgcn_atomic_dec:
+  case Intrinsic::amdgcn_ds_fadd:
+  case Intrinsic::amdgcn_ds_fmin:
+  case Intrinsic::amdgcn_ds_fmax:
+  case Intrinsic::amdgcn_is_shared:
+  case Intrinsic::amdgcn_is_private:
+    OpIndexes.push_back(0);
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool GCNTTIImpl::rewriteIntrinsicWithAddressSpace(
+  IntrinsicInst *II, Value *OldV, Value *NewV) const {
+  auto IntrID = II->getIntrinsicID();
+  switch (IntrID) {
+  case Intrinsic::amdgcn_atomic_inc:
+  case Intrinsic::amdgcn_atomic_dec:
+  case Intrinsic::amdgcn_ds_fadd:
+  case Intrinsic::amdgcn_ds_fmin:
+  case Intrinsic::amdgcn_ds_fmax: {
+    const ConstantInt *IsVolatile = cast<ConstantInt>(II->getArgOperand(4));
+    if (!IsVolatile->isZero())
+      return false;
+    Module *M = II->getParent()->getParent()->getParent();
+    Type *DestTy = II->getType();
+    Type *SrcTy = NewV->getType();
+    Function *NewDecl =
+        Intrinsic::getDeclaration(M, II->getIntrinsicID(), {DestTy, SrcTy});
+    II->setArgOperand(0, NewV);
+    II->setCalledFunction(NewDecl);
+    return true;
+  }
+  case Intrinsic::amdgcn_is_shared:
+  case Intrinsic::amdgcn_is_private: {
+    unsigned TrueAS = IntrID == Intrinsic::amdgcn_is_shared ?
+      AMDGPUAS::LOCAL_ADDRESS : AMDGPUAS::PRIVATE_ADDRESS;
+    unsigned NewAS = NewV->getType()->getPointerAddressSpace();
+    LLVMContext &Ctx = NewV->getType()->getContext();
+    ConstantInt *NewVal = (TrueAS == NewAS) ?
+      ConstantInt::getTrue(Ctx) : ConstantInt::getFalse(Ctx);
+    II->replaceAllUsesWith(NewVal);
+    II->eraseFromParent();
+    return true;
+  }
+  default:
+    return false;
+  }
+}
+
+unsigned GCNTTIImpl::getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Index,
                                        Type *SubTp) {
   if (ST->hasVOP3PInsts()) {
     VectorType *VT = cast<VectorType>(Tp);
@@ -601,15 +727,246 @@ unsigned AMDGPUTTIImpl::getShuffleCost(TTI::ShuffleKind Kind, Type *Tp, int Inde
   return BaseT::getShuffleCost(Kind, Tp, Index, SubTp);
 }
 
-bool AMDGPUTTIImpl::areInlineCompatible(const Function *Caller,
-                                        const Function *Callee) const {
+bool GCNTTIImpl::areInlineCompatible(const Function *Caller,
+                                     const Function *Callee) const {
   const TargetMachine &TM = getTLI()->getTargetMachine();
-  const FeatureBitset &CallerBits =
-    TM.getSubtargetImpl(*Caller)->getFeatureBits();
-  const FeatureBitset &CalleeBits =
-    TM.getSubtargetImpl(*Callee)->getFeatureBits();
+  const GCNSubtarget *CallerST
+    = static_cast<const GCNSubtarget *>(TM.getSubtargetImpl(*Caller));
+  const GCNSubtarget *CalleeST
+    = static_cast<const GCNSubtarget *>(TM.getSubtargetImpl(*Callee));
+
+  const FeatureBitset &CallerBits = CallerST->getFeatureBits();
+  const FeatureBitset &CalleeBits = CalleeST->getFeatureBits();
 
   FeatureBitset RealCallerBits = CallerBits & ~InlineFeatureIgnoreList;
   FeatureBitset RealCalleeBits = CalleeBits & ~InlineFeatureIgnoreList;
-  return ((RealCallerBits & RealCalleeBits) == RealCalleeBits);
+  if ((RealCallerBits & RealCalleeBits) != RealCalleeBits)
+    return false;
+
+  // FIXME: dx10_clamp can just take the caller setting, but there seems to be
+  // no way to support merge for backend defined attributes.
+  AMDGPU::SIModeRegisterDefaults CallerMode(*Caller, *CallerST);
+  AMDGPU::SIModeRegisterDefaults CalleeMode(*Callee, *CalleeST);
+  return CallerMode.isInlineCompatible(CalleeMode);
+}
+
+void GCNTTIImpl::getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
+                                         TTI::UnrollingPreferences &UP) {
+  CommonTTI.getUnrollingPreferences(L, SE, UP);
+}
+
+unsigned GCNTTIImpl::getUserCost(const User *U,
+                                 ArrayRef<const Value *> Operands) {
+  const Instruction *I = dyn_cast<Instruction>(U);
+  if (!I)
+    return BaseT::getUserCost(U, Operands);
+
+  // Estimate different operations to be optimized out
+  switch (I->getOpcode()) {
+  case Instruction::ExtractElement: {
+    ConstantInt *CI = dyn_cast<ConstantInt>(I->getOperand(1));
+    unsigned Idx = -1;
+    if (CI)
+      Idx = CI->getZExtValue();
+    return getVectorInstrCost(I->getOpcode(), I->getOperand(0)->getType(), Idx);
+  }
+  case Instruction::InsertElement: {
+    ConstantInt *CI = dyn_cast<ConstantInt>(I->getOperand(2));
+    unsigned Idx = -1;
+    if (CI)
+      Idx = CI->getZExtValue();
+    return getVectorInstrCost(I->getOpcode(), I->getType(), Idx);
+  }
+  case Instruction::Call: {
+    if (const IntrinsicInst *II = dyn_cast<IntrinsicInst>(U)) {
+      SmallVector<Value *, 4> Args(II->arg_operands());
+      FastMathFlags FMF;
+      if (auto *FPMO = dyn_cast<FPMathOperator>(II))
+        FMF = FPMO->getFastMathFlags();
+      return getIntrinsicInstrCost(II->getIntrinsicID(), II->getType(), Args,
+                                   FMF);
+    } else {
+      return BaseT::getUserCost(U, Operands);
+    }
+  }
+  case Instruction::ShuffleVector: {
+    const ShuffleVectorInst *Shuffle = cast<ShuffleVectorInst>(I);
+    Type *Ty = Shuffle->getType();
+    Type *SrcTy = Shuffle->getOperand(0)->getType();
+
+    // TODO: Identify and add costs for insert subvector, etc.
+    int SubIndex;
+    if (Shuffle->isExtractSubvectorMask(SubIndex))
+      return getShuffleCost(TTI::SK_ExtractSubvector, SrcTy, SubIndex, Ty);
+
+    if (Shuffle->changesLength())
+      return BaseT::getUserCost(U, Operands);
+
+    if (Shuffle->isIdentity())
+      return 0;
+
+    if (Shuffle->isReverse())
+      return getShuffleCost(TTI::SK_Reverse, Ty, 0, nullptr);
+
+    if (Shuffle->isSelect())
+      return getShuffleCost(TTI::SK_Select, Ty, 0, nullptr);
+
+    if (Shuffle->isTranspose())
+      return getShuffleCost(TTI::SK_Transpose, Ty, 0, nullptr);
+
+    if (Shuffle->isZeroEltSplat())
+      return getShuffleCost(TTI::SK_Broadcast, Ty, 0, nullptr);
+
+    if (Shuffle->isSingleSource())
+      return getShuffleCost(TTI::SK_PermuteSingleSrc, Ty, 0, nullptr);
+
+    return getShuffleCost(TTI::SK_PermuteTwoSrc, Ty, 0, nullptr);
+  }
+  case Instruction::ZExt:
+  case Instruction::SExt:
+  case Instruction::FPToUI:
+  case Instruction::FPToSI:
+  case Instruction::FPExt:
+  case Instruction::PtrToInt:
+  case Instruction::IntToPtr:
+  case Instruction::SIToFP:
+  case Instruction::UIToFP:
+  case Instruction::Trunc:
+  case Instruction::FPTrunc:
+  case Instruction::BitCast:
+  case Instruction::AddrSpaceCast: {
+    return getCastInstrCost(I->getOpcode(), I->getType(),
+                            I->getOperand(0)->getType(), I);
+  }
+  case Instruction::Add:
+  case Instruction::FAdd:
+  case Instruction::Sub:
+  case Instruction::FSub:
+  case Instruction::Mul:
+  case Instruction::FMul:
+  case Instruction::UDiv:
+  case Instruction::SDiv:
+  case Instruction::FDiv:
+  case Instruction::URem:
+  case Instruction::SRem:
+  case Instruction::FRem:
+  case Instruction::Shl:
+  case Instruction::LShr:
+  case Instruction::AShr:
+  case Instruction::And:
+  case Instruction::Or:
+  case Instruction::Xor:
+  case Instruction::FNeg: {
+    return getArithmeticInstrCost(I->getOpcode(), I->getType(),
+                                  TTI::OK_AnyValue, TTI::OK_AnyValue,
+                                  TTI::OP_None, TTI::OP_None, Operands, I);
+  }
+  default:
+    break;
+  }
+
+  return BaseT::getUserCost(U, Operands);
+}
+
+unsigned R600TTIImpl::getHardwareNumberOfRegisters(bool Vec) const {
+  return 4 * 128; // XXX - 4 channels. Should these count as vector instead?
+}
+
+unsigned R600TTIImpl::getNumberOfRegisters(bool Vec) const {
+  return getHardwareNumberOfRegisters(Vec);
+}
+
+unsigned R600TTIImpl::getRegisterBitWidth(bool Vector) const {
+  return 32;
+}
+
+unsigned R600TTIImpl::getMinVectorRegisterBitWidth() const {
+  return 32;
+}
+
+unsigned R600TTIImpl::getLoadStoreVecRegBitWidth(unsigned AddrSpace) const {
+  if (AddrSpace == AMDGPUAS::GLOBAL_ADDRESS ||
+      AddrSpace == AMDGPUAS::CONSTANT_ADDRESS)
+    return 128;
+  if (AddrSpace == AMDGPUAS::LOCAL_ADDRESS ||
+      AddrSpace == AMDGPUAS::REGION_ADDRESS)
+    return 64;
+  if (AddrSpace == AMDGPUAS::PRIVATE_ADDRESS)
+    return 32;
+
+  if ((AddrSpace == AMDGPUAS::PARAM_D_ADDRESS ||
+      AddrSpace == AMDGPUAS::PARAM_I_ADDRESS ||
+      (AddrSpace >= AMDGPUAS::CONSTANT_BUFFER_0 &&
+      AddrSpace <= AMDGPUAS::CONSTANT_BUFFER_15)))
+    return 128;
+  llvm_unreachable("unhandled address space");
+}
+
+bool R600TTIImpl::isLegalToVectorizeMemChain(unsigned ChainSizeInBytes,
+                                             unsigned Alignment,
+                                             unsigned AddrSpace) const {
+  // We allow vectorization of flat stores, even though we may need to decompose
+  // them later if they may access private memory. We don't have enough context
+  // here, and legalization can handle it.
+  return (AddrSpace != AMDGPUAS::PRIVATE_ADDRESS);
+}
+
+bool R600TTIImpl::isLegalToVectorizeLoadChain(unsigned ChainSizeInBytes,
+                                              unsigned Alignment,
+                                              unsigned AddrSpace) const {
+  return isLegalToVectorizeMemChain(ChainSizeInBytes, Alignment, AddrSpace);
+}
+
+bool R600TTIImpl::isLegalToVectorizeStoreChain(unsigned ChainSizeInBytes,
+                                               unsigned Alignment,
+                                               unsigned AddrSpace) const {
+  return isLegalToVectorizeMemChain(ChainSizeInBytes, Alignment, AddrSpace);
+}
+
+unsigned R600TTIImpl::getMaxInterleaveFactor(unsigned VF) {
+  // Disable unrolling if the loop is not vectorized.
+  // TODO: Enable this again.
+  if (VF == 1)
+    return 1;
+
+  return 8;
+}
+
+unsigned R600TTIImpl::getCFInstrCost(unsigned Opcode) {
+  // XXX - For some reason this isn't called for switch.
+  switch (Opcode) {
+  case Instruction::Br:
+  case Instruction::Ret:
+    return 10;
+  default:
+    return BaseT::getCFInstrCost(Opcode);
+  }
+}
+
+int R600TTIImpl::getVectorInstrCost(unsigned Opcode, Type *ValTy,
+                                    unsigned Index) {
+  switch (Opcode) {
+  case Instruction::ExtractElement:
+  case Instruction::InsertElement: {
+    unsigned EltSize
+      = DL.getTypeSizeInBits(cast<VectorType>(ValTy)->getElementType());
+    if (EltSize < 32) {
+      return BaseT::getVectorInstrCost(Opcode, ValTy, Index);
+    }
+
+    // Extracts are just reads of a subregister, so are free. Inserts are
+    // considered free because we don't want to have any cost for scalarizing
+    // operations, and we don't have to copy into a different register class.
+
+    // Dynamic indexing isn't free and is best avoided.
+    return Index == ~0u ? 2 : 0;
+  }
+  default:
+    return BaseT::getVectorInstrCost(Opcode, ValTy, Index);
+  }
+}
+
+void R600TTIImpl::getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
+                                          TTI::UnrollingPreferences &UP) {
+  CommonTTI.getUnrollingPreferences(L, SE, UP);
 }

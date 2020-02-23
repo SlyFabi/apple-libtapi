@@ -1,9 +1,8 @@
 //==-- AArch64MCInstLower.cpp - Convert AArch64 MachineInstr to an MCInst --==//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,16 +14,21 @@
 #include "AArch64MCInstLower.h"
 #include "MCTargetDesc/AArch64MCExpr.h"
 #include "Utils/AArch64BaseInfo.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineInstr.h"
-#include "llvm/CodeGen/TargetLoweringObjectFile.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/CodeGen/MachineModuleInfoImpls.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/GlobalPtrAuthInfo.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetMachine.h"
 using namespace llvm;
 
@@ -33,9 +37,68 @@ extern cl::opt<bool> EnableAArch64ELFLocalDynamicTLSGeneration;
 AArch64MCInstLower::AArch64MCInstLower(MCContext &ctx, AsmPrinter &printer)
     : Ctx(ctx), Printer(printer) {}
 
+static MCSymbol *getAuthGVStub(const GlobalVariable *GVB, AsmPrinter &Printer) {
+  auto PAI = *GlobalPtrAuthInfo::analyze(GVB);
+
+  // Figure out the base symbol and the addend, if any.
+  APInt Offset(64, 0);
+  const Value *BaseGV =
+      PAI.getPointer()->stripAndAccumulateInBoundsConstantOffsets(
+          Printer.getDataLayout(), Offset);
+
+  auto *BaseGVB = dyn_cast<GlobalValue>(BaseGV);
+
+  // If we can't understand the referenced ConstantExpr, there's nothing
+  // else we can do: emit an error.
+  if (!BaseGVB) {
+    BaseGVB = GVB;
+    BaseGV->getContext().emitError(
+        "Couldn't resolve target base/addend of llvm.ptrauth global '" +
+        BaseGV->getName() + "'");
+  }
+
+  uint16_t Discriminator = PAI.getDiscriminator()->getZExtValue();
+
+  auto *KeyC = PAI.getKey();
+  assert(isUInt<2>(KeyC->getZExtValue()) && "Invalid PAC Key ID");
+  AArch64PACKey::ID Key = AArch64PACKey::ID(KeyC->getZExtValue());
+
+  // Mangle the offset into the stub name.  Avoid '-' in symbols and extra logic
+  // by using the uint64_t representation for negative numbers.
+  uint64_t OffsetV = Offset.getSExtValue();
+  std::string Suffix = "$";
+  if (OffsetV)
+    Suffix += utostr(OffsetV) + "$";
+  Suffix += (Twine("auth_ptr$") + AArch64PACKeyIDToString(Key) + "$" +
+             utostr(Discriminator))
+                .str();
+
+  if (PAI.hasAddressDiversity())
+    report_fatal_error("Can't reference an address-diversified ptrauth global"
+                       " in an instruction.");
+
+  MCSymbol *MCSym = Printer.OutContext.getOrCreateSymbol(
+      Printer.getDataLayout().getLinkerPrivateGlobalPrefix() + "_" +
+      BaseGVB->getName() + Suffix);
+
+  MachineModuleInfoMachO &MMIMachO =
+      Printer.MMI->getObjFileInfo<MachineModuleInfoMachO>();
+  MachineModuleInfoMachO::AuthStubInfo &StubInfo =
+      MMIMachO.getAuthGVStubEntry(MCSym);
+
+  if (!StubInfo.Pointer)
+    StubInfo.Pointer = Printer.lowerPtrAuthGlobalConstant(PAI);
+  return MCSym;
+}
+
 MCSymbol *
 AArch64MCInstLower::GetGlobalAddressSymbol(const MachineOperand &MO) const {
   const GlobalValue *GV = MO.getGlobal();
+
+  if (const GlobalVariable *GVB = dyn_cast<GlobalVariable>(GV))
+    if (GV->getSection() == "llvm.ptrauth")
+      return getAuthGVStub(GVB, Printer);
+
   unsigned TargetFlags = MO.getTargetFlags();
   const Triple &TheTriple = Printer.TM.getTargetTriple();
   if (!TheTriple.isOSBinFormatCOFF())
@@ -44,16 +107,31 @@ AArch64MCInstLower::GetGlobalAddressSymbol(const MachineOperand &MO) const {
   assert(TheTriple.isOSWindows() &&
          "Windows is the only supported COFF target");
 
-  bool IsIndirect = (TargetFlags & AArch64II::MO_DLLIMPORT);
+  bool IsIndirect = (TargetFlags & (AArch64II::MO_DLLIMPORT | AArch64II::MO_COFFSTUB));
   if (!IsIndirect)
     return Printer.getSymbol(GV);
 
   SmallString<128> Name;
-  Name = "__imp_";
+  if (TargetFlags & AArch64II::MO_DLLIMPORT)
+    Name = "__imp_";
+  else if (TargetFlags & AArch64II::MO_COFFSTUB)
+    Name = ".refptr.";
   Printer.TM.getNameWithPrefix(Name, GV,
                                Printer.getObjFileLowering().getMangler());
 
-  return Ctx.getOrCreateSymbol(Name);
+  MCSymbol *MCSym = Ctx.getOrCreateSymbol(Name);
+
+  if (TargetFlags & AArch64II::MO_COFFSTUB) {
+    MachineModuleInfoCOFF &MMICOFF =
+        Printer.MMI->getObjFileInfo<MachineModuleInfoCOFF>();
+    MachineModuleInfoImpl::StubValueTy &StubSym =
+        MMICOFF.getGVStubEntry(MCSym);
+
+    if (!StubSym.getPointer())
+      StubSym = MachineModuleInfoImpl::StubValueTy(Printer.getSymbol(GV), true);
+  }
+
+  return MCSym;
 }
 
 MCSymbol *
@@ -133,6 +211,8 @@ MCOperand AArch64MCInstLower::lowerSymbolOperandELF(const MachineOperand &MO,
       RefFlags |= AArch64MCExpr::VK_TLSDESC;
       break;
     }
+  } else if (MO.getTargetFlags() & AArch64II::MO_PREL) {
+    RefFlags |= AArch64MCExpr::VK_PREL;
   } else {
     // No modifier means this is a generic reference, classified as absolute for
     // the cases where it matters (:abs_g0: etc).
@@ -173,11 +253,51 @@ MCOperand AArch64MCInstLower::lowerSymbolOperandELF(const MachineOperand &MO,
 
 MCOperand AArch64MCInstLower::lowerSymbolOperandCOFF(const MachineOperand &MO,
                                                      MCSymbol *Sym) const {
-  MCSymbolRefExpr::VariantKind RefKind = MCSymbolRefExpr::VK_None;
-  const MCExpr *Expr = MCSymbolRefExpr::create(Sym, RefKind, Ctx);
+  uint32_t RefFlags = 0;
+
+  if (MO.getTargetFlags() & AArch64II::MO_TLS) {
+    if ((MO.getTargetFlags() & AArch64II::MO_FRAGMENT) == AArch64II::MO_PAGEOFF)
+      RefFlags |= AArch64MCExpr::VK_SECREL_LO12;
+    else if ((MO.getTargetFlags() & AArch64II::MO_FRAGMENT) ==
+             AArch64II::MO_HI12)
+      RefFlags |= AArch64MCExpr::VK_SECREL_HI12;
+
+  } else if (MO.getTargetFlags() & AArch64II::MO_S) {
+    RefFlags |= AArch64MCExpr::VK_SABS;
+  } else {
+    RefFlags |= AArch64MCExpr::VK_ABS;
+  }
+
+  if ((MO.getTargetFlags() & AArch64II::MO_FRAGMENT) == AArch64II::MO_G3)
+    RefFlags |= AArch64MCExpr::VK_G3;
+  else if ((MO.getTargetFlags() & AArch64II::MO_FRAGMENT) == AArch64II::MO_G2)
+    RefFlags |= AArch64MCExpr::VK_G2;
+  else if ((MO.getTargetFlags() & AArch64II::MO_FRAGMENT) == AArch64II::MO_G1)
+    RefFlags |= AArch64MCExpr::VK_G1;
+  else if ((MO.getTargetFlags() & AArch64II::MO_FRAGMENT) == AArch64II::MO_G0)
+    RefFlags |= AArch64MCExpr::VK_G0;
+
+  // FIXME: Currently we only set VK_NC for MO_G3/MO_G2/MO_G1/MO_G0. This is
+  // because setting VK_NC for others would mean setting their respective
+  // RefFlags correctly.  We should do this in a separate patch.
+  if (MO.getTargetFlags() & AArch64II::MO_NC) {
+    auto MOFrag = (MO.getTargetFlags() & AArch64II::MO_FRAGMENT);
+    if (MOFrag == AArch64II::MO_G3 || MOFrag == AArch64II::MO_G2 ||
+        MOFrag == AArch64II::MO_G1 || MOFrag == AArch64II::MO_G0)
+      RefFlags |= AArch64MCExpr::VK_NC;
+  }
+
+  const MCExpr *Expr =
+      MCSymbolRefExpr::create(Sym, MCSymbolRefExpr::VK_None, Ctx);
   if (!MO.isJTI() && MO.getOffset())
     Expr = MCBinaryExpr::createAdd(
         Expr, MCConstantExpr::create(MO.getOffset(), Ctx), Ctx);
+
+  auto RefKind = static_cast<AArch64MCExpr::VariantKind>(RefFlags);
+  assert(RefKind != AArch64MCExpr::VK_INVALID &&
+         "Invalid relocation requested");
+  Expr = AArch64MCExpr::create(Expr, RefKind, Ctx);
+
   return MCOperand::createExpr(Expr);
 }
 
@@ -243,5 +363,18 @@ void AArch64MCInstLower::Lower(const MachineInstr *MI, MCInst &OutMI) const {
     MCOperand MCOp;
     if (lowerOperand(MO, MCOp))
       OutMI.addOperand(MCOp);
+  }
+
+  switch (OutMI.getOpcode()) {
+  case AArch64::CATCHRET:
+    OutMI = MCInst();
+    OutMI.setOpcode(AArch64::RET);
+    OutMI.addOperand(MCOperand::createReg(AArch64::LR));
+    break;
+  case AArch64::CLEANUPRET:
+    OutMI = MCInst();
+    OutMI.setOpcode(AArch64::RET);
+    OutMI.addOperand(MCOperand::createReg(AArch64::LR));
+    break;
   }
 }

@@ -1,9 +1,8 @@
 //===- CriticalAntiDepBreaker.cpp - Anti-dep breaker ----------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -113,7 +112,7 @@ void CriticalAntiDepBreaker::Observe(MachineInstr &MI, unsigned Count,
   // FIXME: It may be possible to remove the isKill() restriction once PR18663
   // has been properly fixed. There can be value in processing kills as seen in
   // the AggressiveAntiDepBreaker class.
-  if (MI.isDebugValue() || MI.isKill())
+  if (MI.isDebugInstr() || MI.isKill())
     return;
   assert(Count < InsertPosIndex && "Instruction index out of expected range!");
 
@@ -170,11 +169,11 @@ void CriticalAntiDepBreaker::PrescanInstruction(MachineInstr &MI) {
   // FIXME: The issue with predicated instruction is more complex. We are being
   // conservative here because the kill markers cannot be trusted after
   // if-conversion:
-  // %r6 = LDR %sp, %reg0, 92, pred:14, pred:%reg0; mem:LD4[FixedStack14]
+  // %r6 = LDR %sp, %reg0, 92, 14, %reg0; mem:LD4[FixedStack14]
   // ...
-  // STR %r0, killed %r6, %reg0, 0, pred:0, pred:%cpsr; mem:ST4[%395]
-  // %r6 = LDR %sp, %reg0, 100, pred:0, pred:%cpsr; mem:LD4[FixedStack12]
-  // STR %r0, killed %r6, %reg0, 0, pred:14, pred:%reg0; mem:ST4[%396](align=8)
+  // STR %r0, killed %r6, %reg0, 0, 0, %cpsr; mem:ST4[%395]
+  // %r6 = LDR %sp, %reg0, 100, 0, %cpsr; mem:LD4[FixedStack12]
+  // STR %r0, killed %r6, %reg0, 0, 14, %reg0; mem:ST4[%396](align=8)
   //
   // The first R6 kill is not really a kill since it's killed by a predicated
   // instruction which may not be executed. The second R6 def may or may not
@@ -188,7 +187,7 @@ void CriticalAntiDepBreaker::PrescanInstruction(MachineInstr &MI) {
   for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
     MachineOperand &MO = MI.getOperand(i);
     if (!MO.isReg()) continue;
-    unsigned Reg = MO.getReg();
+    Register Reg = MO.getReg();
     if (Reg == 0) continue;
     const TargetRegisterClass *NewRC = nullptr;
 
@@ -262,18 +261,28 @@ void CriticalAntiDepBreaker::ScanInstruction(MachineInstr &MI, unsigned Count) {
     for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
       MachineOperand &MO = MI.getOperand(i);
 
-      if (MO.isRegMask())
-        for (unsigned i = 0, e = TRI->getNumRegs(); i != e; ++i)
-          if (MO.clobbersPhysReg(i)) {
+      if (MO.isRegMask()) {
+        auto ClobbersPhysRegAndSubRegs = [&](unsigned PhysReg) {
+          for (MCSubRegIterator SRI(PhysReg, TRI, true); SRI.isValid(); ++SRI)
+            if (!MO.clobbersPhysReg(*SRI))
+              return false;
+
+          return true;
+        };
+
+        for (unsigned i = 0, e = TRI->getNumRegs(); i != e; ++i) {
+          if (ClobbersPhysRegAndSubRegs(i)) {
             DefIndices[i] = Count;
             KillIndices[i] = ~0u;
             KeepRegs.reset(i);
             Classes[i] = nullptr;
             RegRefs.erase(i);
           }
+        }
+      }
 
       if (!MO.isReg()) continue;
-      unsigned Reg = MO.getReg();
+      Register Reg = MO.getReg();
       if (Reg == 0) continue;
       if (!MO.isDef()) continue;
 
@@ -304,7 +313,7 @@ void CriticalAntiDepBreaker::ScanInstruction(MachineInstr &MI, unsigned Count) {
   for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
     MachineOperand &MO = MI.getOperand(i);
     if (!MO.isReg()) continue;
-    unsigned Reg = MO.getReg();
+    Register Reg = MO.getReg();
     if (Reg == 0) continue;
     if (!MO.isUse()) continue;
 
@@ -458,17 +467,18 @@ BreakAntiDependencies(const std::vector<SUnit> &SUnits,
     if (!Max || SU->getDepth() + SU->Latency > Max->getDepth() + Max->Latency)
       Max = SU;
   }
+  assert(Max && "Failed to find bottom of the critical path");
 
 #ifndef NDEBUG
   {
-    DEBUG(dbgs() << "Critical path has total latency "
-          << (Max->getDepth() + Max->Latency) << "\n");
-    DEBUG(dbgs() << "Available regs:");
+    LLVM_DEBUG(dbgs() << "Critical path has total latency "
+                      << (Max->getDepth() + Max->Latency) << "\n");
+    LLVM_DEBUG(dbgs() << "Available regs:");
     for (unsigned Reg = 0; Reg < TRI->getNumRegs(); ++Reg) {
       if (KillIndices[Reg] == ~0u)
-        DEBUG(dbgs() << " " << printReg(Reg, TRI));
+        LLVM_DEBUG(dbgs() << " " << printReg(Reg, TRI));
     }
-    DEBUG(dbgs() << '\n');
+    LLVM_DEBUG(dbgs() << '\n');
   }
 #endif
 
@@ -530,11 +540,11 @@ BreakAntiDependencies(const std::vector<SUnit> &SUnits,
     // Kill instructions can define registers but are really nops, and there
     // might be a real definition earlier that needs to be paired with uses
     // dominated by this kill.
-    
+
     // FIXME: It may be possible to remove the isKill() restriction once PR18663
     // has been properly fixed. There can be value in processing kills as seen
     // in the AggressiveAntiDepBreaker class.
-    if (MI.isDebugValue() || MI.isKill())
+    if (MI.isDebugInstr() || MI.isKill())
       continue;
 
     // Check if this instruction has a dependence on the critical path that
@@ -613,7 +623,7 @@ BreakAntiDependencies(const std::vector<SUnit> &SUnits,
       for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
         MachineOperand &MO = MI.getOperand(i);
         if (!MO.isReg()) continue;
-        unsigned Reg = MO.getReg();
+        Register Reg = MO.getReg();
         if (Reg == 0) continue;
         if (MO.isUse() && TRI->regsOverlap(AntiDepReg, Reg)) {
           AntiDepReg = 0;
@@ -645,10 +655,10 @@ BreakAntiDependencies(const std::vector<SUnit> &SUnits,
                                                      AntiDepReg,
                                                      LastNewReg[AntiDepReg],
                                                      RC, ForbidRegs)) {
-        DEBUG(dbgs() << "Breaking anti-dependence edge on "
-                     << printReg(AntiDepReg, TRI) << " with "
-                     << RegRefs.count(AntiDepReg) << " references"
-                     << " using " << printReg(NewReg, TRI) << "!\n");
+        LLVM_DEBUG(dbgs() << "Breaking anti-dependence edge on "
+                          << printReg(AntiDepReg, TRI) << " with "
+                          << RegRefs.count(AntiDepReg) << " references"
+                          << " using " << printReg(NewReg, TRI) << "!\n");
 
         // Update the references to the old register to refer to the new
         // register.

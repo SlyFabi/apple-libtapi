@@ -1,16 +1,15 @@
 set(LLVM_LINK_COMPONENTS
   BitReader
+  BitstreamReader
   Core
   Support
   )
 
 add_clang_library(clangIndex
   ClangIndexRecordWriter.cpp
-  CodegenNameGenerator.cpp
   CommentToXML.cpp
   FileIndexRecord.cpp
   IndexBody.cpp
-  IndexDataStore.cpp
   IndexDataStoreUtils.cpp
   IndexDecl.cpp
   IndexingAction.cpp

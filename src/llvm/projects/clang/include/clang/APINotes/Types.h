@@ -13,6 +13,7 @@
 
 #ifndef LLVM_CLANG_API_NOTES_TYPES_H
 #define LLVM_CLANG_API_NOTES_TYPES_H
+#include "clang/Basic/LLVM.h"
 #include "clang/Basic/Specifiers.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/Optional.h"
@@ -20,23 +21,11 @@
 #include <cassert>
 #include <climits>
 
-namespace llvm {
-  class raw_ostream;
-}
-
 namespace clang {
 namespace api_notes {
 
 /// The file extension used for the source representation of API notes.
 static const char SOURCE_APINOTES_EXTENSION[] = "apinotes";
-
-/// The file extension used for the binary representation of API notes.
-static const char BINARY_APINOTES_EXTENSION[] = "apinotesc";
-
-using llvm::ArrayRef;
-using llvm::StringRef;
-using llvm::Optional;
-using llvm::None;
 
 /// Opaque context ID used to refer to an Objective-C class or protocol.
 class ContextID {

@@ -1,15 +1,14 @@
 ; RUN: llc -mtriple armv7 %s -stop-before=livedebugvalues -o - | FileCheck %s
 
-define <4 x i8> @i(<4 x i8>*) !dbg !8 {
-  %2 = load <4 x i8>, <4 x i8>* %0, align 4, !dbg !14
-  ; CHECK: %[[reg:.*]] = VLD1LNd32 {{.*}} debug-location !14 :: (load 4 from %ir.0)
-  ; CHECK-NEXT: VMOVLsv8i16 {{.*}} %[[reg]], {{.*}} debug-location !14
-  ; CHECK-NEXT: VMOVLsv4i32 {{.*}} %[[reg]], {{.*}} debug-location !14
-
-  %3 = sdiv <4 x i8> zeroinitializer, %2, !dbg !15
-  call void @llvm.dbg.value(metadata <4 x i8> %2, metadata !11, metadata !DIExpression()), !dbg !14
-  call void @llvm.dbg.value(metadata <4 x i8> %3, metadata !13, metadata !DIExpression()), !dbg !15
-  ret <4 x i8> %3, !dbg !16
+define <4 x i8> @i(<4 x i8>*, <4 x i8>) !dbg !8 {
+  %3 = load <4 x i8>, <4 x i8>* %0, align 4, !dbg !14
+  ; CHECK: $[[reg:.*]] = VLD1LNd32 {{.*}} debug-location !14 :: (load 4 from %ir.0)
+  ; CHECK: VMOVLsv8i16 {{.*}} $[[reg]], {{.*}} debug-location !14
+  ; CHECK: VMOVLsv4i32 {{.*}} $[[reg]], {{.*}} debug-location !14
+  %4 = sdiv <4 x i8> %1, %3, !dbg !15
+  call void @llvm.dbg.value(metadata <4 x i8> %3, metadata !11, metadata !DIExpression()), !dbg !14
+  call void @llvm.dbg.value(metadata <4 x i8> %4, metadata !13, metadata !DIExpression()), !dbg !15
+  ret <4 x i8> %4, !dbg !16
 }
 
 declare void @llvm.dbg.value(metadata, metadata, metadata)
@@ -26,7 +25,7 @@ declare void @llvm.dbg.value(metadata, metadata, metadata)
 !5 = distinct !DICompileUnit(language: DW_LANG_C, file: !6, producer: "debugify", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug, enums: !7)
 !6 = !DIFile(filename: "/Users/vsk/Desktop/test.ll", directory: "/")
 !7 = !{}
-!8 = distinct !DISubprogram(name: "i", linkageName: "i", scope: null, file: !6, line: 1, type: !9, isLocal: false, isDefinition: true, scopeLine: 1, isOptimized: true, unit: !5, variables: !10)
+!8 = distinct !DISubprogram(name: "i", linkageName: "i", scope: null, file: !6, line: 1, type: !9, isLocal: false, isDefinition: true, scopeLine: 1, isOptimized: true, unit: !5, retainedNodes: !10)
 !9 = !DISubroutineType(types: !7)
 !10 = !{!11, !13}
 !11 = !DILocalVariable(name: "1", scope: !8, file: !6, line: 1, type: !12)

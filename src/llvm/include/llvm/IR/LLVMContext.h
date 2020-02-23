@@ -1,9 +1,8 @@
 //===- llvm/LLVMContext.h - Class for managing "global" state ---*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -18,7 +17,6 @@
 #include "llvm-c/Types.h"
 #include "llvm/IR/DiagnosticHandler.h"
 #include "llvm/Support/CBindingWrapping.h"
-#include "llvm/Support/Options.h"
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -31,17 +29,17 @@ class Function;
 class Instruction;
 class LLVMContextImpl;
 class Module;
-class OptBisect;
+class OptPassGate;
 template <typename T> class SmallVectorImpl;
 class SMDiagnostic;
 class StringRef;
 class Twine;
+class LLVMRemarkStreamer;
+class raw_ostream;
 
-namespace yaml {
-
-class Output;
-
-} // end namespace yaml
+namespace remarks {
+class RemarkStreamer;
+}
 
 namespace SyncScope {
 
@@ -76,42 +74,22 @@ public:
 
   // Pinned metadata names, which always have the same value.  This is a
   // compile-time performance optimization, not a correctness optimization.
-  enum {
-    MD_dbg = 0,                       // "dbg"
-    MD_tbaa = 1,                      // "tbaa"
-    MD_prof = 2,                      // "prof"
-    MD_fpmath = 3,                    // "fpmath"
-    MD_range = 4,                     // "range"
-    MD_tbaa_struct = 5,               // "tbaa.struct"
-    MD_invariant_load = 6,            // "invariant.load"
-    MD_alias_scope = 7,               // "alias.scope"
-    MD_noalias = 8,                   // "noalias",
-    MD_nontemporal = 9,               // "nontemporal"
-    MD_mem_parallel_loop_access = 10, // "llvm.mem.parallel_loop_access"
-    MD_nonnull = 11,                  // "nonnull"
-    MD_dereferenceable = 12,          // "dereferenceable"
-    MD_dereferenceable_or_null = 13,  // "dereferenceable_or_null"
-    MD_make_implicit = 14,            // "make.implicit"
-    MD_unpredictable = 15,            // "unpredictable"
-    MD_invariant_group = 16,          // "invariant.group"
-    MD_align = 17,                    // "align"
-    MD_loop = 18,                     // "llvm.loop"
-    MD_type = 19,                     // "type"
-    MD_section_prefix = 20,           // "section_prefix"
-    MD_absolute_symbol = 21,          // "absolute_symbol"
-    MD_associated = 22,               // "associated"
-    MD_callees = 23,                  // "callees"
-    MD_irr_loop = 24,                 // "irr_loop"
+  enum : unsigned {
+#define LLVM_FIXED_MD_KIND(EnumID, Name, Value) EnumID = Value,
+#include "llvm/IR/FixedMetadataKinds.def"
+#undef LLVM_FIXED_MD_KIND
   };
 
   /// Known operand bundle tag IDs, which always have the same value.  All
   /// operand bundle tags that LLVM has special knowledge of are listed here.
   /// Additionally, this scheme allows LLVM to efficiently check for specific
   /// operand bundle tags without comparing strings.
-  enum {
+  enum : unsigned {
     OB_deopt = 0,         // "deopt"
     OB_funclet = 1,       // "funclet"
     OB_gc_transition = 2, // "gc-transition"
+    OB_cfguardtarget = 3, // "cfguardtarget"
+    OB_ptrauth = 4,       // "ptrauth"
   };
 
   /// getMDKindID - Return a unique non-zero ID for the specified metadata kind.
@@ -229,38 +207,49 @@ public:
   /// to caller.
   std::unique_ptr<DiagnosticHandler> getDiagnosticHandler();
 
-  /// \brief Return if a code hotness metric should be included in optimization
+  /// Return if a code hotness metric should be included in optimization
   /// diagnostics.
   bool getDiagnosticsHotnessRequested() const;
-  /// \brief Set if a code hotness metric should be included in optimization
+  /// Set if a code hotness metric should be included in optimization
   /// diagnostics.
   void setDiagnosticsHotnessRequested(bool Requested);
 
-  /// \brief Return the minimum hotness value a diagnostic would need in order
+  /// Return the minimum hotness value a diagnostic would need in order
   /// to be included in optimization diagnostics. If there is no minimum, this
   /// returns None.
   uint64_t getDiagnosticsHotnessThreshold() const;
 
-  /// \brief Set the minimum hotness value a diagnostic needs in order to be
+  /// Set the minimum hotness value a diagnostic needs in order to be
   /// included in optimization diagnostics.
   void setDiagnosticsHotnessThreshold(uint64_t Threshold);
 
-  /// \brief Return the YAML file used by the backend to save optimization
-  /// diagnostics.  If null, diagnostics are not saved in a file but only
-  /// emitted via the diagnostic handler.
-  yaml::Output *getDiagnosticsOutputFile();
-  /// Set the diagnostics output file used for optimization diagnostics.
+  /// The "main remark streamer" used by all the specialized remark streamers.
+  /// This streamer keeps generic remark metadata in memory throughout the life
+  /// of the LLVMContext. This metadata may be emitted in a section in object
+  /// files depending on the format requirements.
   ///
-  /// By default or if invoked with null, diagnostics are not saved in a file
-  /// but only emitted via the diagnostic handler.  Even if an output file is
-  /// set, the handler is invoked for each diagnostic message.
-  void setDiagnosticsOutputFile(std::unique_ptr<yaml::Output> F);
+  /// All specialized remark streamers should convert remarks to
+  /// llvm::remarks::Remark and emit them through this streamer.
+  remarks::RemarkStreamer *getMainRemarkStreamer();
+  const remarks::RemarkStreamer *getMainRemarkStreamer() const;
+  void setMainRemarkStreamer(
+      std::unique_ptr<remarks::RemarkStreamer> MainRemarkStreamer);
 
-  /// \brief Get the prefix that should be printed in front of a diagnostic of
+  /// The "LLVM remark streamer" used by LLVM to serialize remark diagnostics
+  /// comming from IR and MIR passes.
+  ///
+  /// If it does not exist, diagnostics are not saved in a file but only emitted
+  /// via the diagnostic handler.
+  LLVMRemarkStreamer *getLLVMRemarkStreamer();
+  const LLVMRemarkStreamer *getLLVMRemarkStreamer() const;
+  void
+  setLLVMRemarkStreamer(std::unique_ptr<LLVMRemarkStreamer> RemarkStreamer);
+
+  /// Get the prefix that should be printed in front of a diagnostic of
   ///        the given \p Severity
   static const char *getDiagnosticMessagePrefix(DiagnosticSeverity Severity);
 
-  /// \brief Report a message to the currently installed diagnostic handler.
+  /// Report a message to the currently installed diagnostic handler.
   ///
   /// This function returns, in particular in the case of error reporting
   /// (DI.Severity == \a DS_Error), so the caller should leave the compilation
@@ -272,7 +261,7 @@ public:
   /// "warning: " for \a DS_Warning, and "note: " for \a DS_Note.
   void diagnose(const DiagnosticInfo &DI);
 
-  /// \brief Registers a yield callback with the given context.
+  /// Registers a yield callback with the given context.
   ///
   /// The yield callback function may be called by LLVM to transfer control back
   /// to the client that invoked the LLVM compilation. This can be used to yield
@@ -291,7 +280,7 @@ public:
   /// control to LLVM. Other LLVM contexts are unaffected by this restriction.
   void setYieldCallback(YieldCallbackTy Callback, void *OpaqueHandle);
 
-  /// \brief Calls the yield callback (if applicable).
+  /// Calls the yield callback (if applicable).
   ///
   /// This transfers control of the current thread back to the client, which may
   /// suspend the current thread. Only call this method when LLVM doesn't hold
@@ -307,17 +296,17 @@ public:
   void emitError(const Instruction *I, const Twine &ErrorStr);
   void emitError(const Twine &ErrorStr);
 
-  /// \brief Query for a debug option's value.
-  ///
-  /// This function returns typed data populated from command line parsing.
-  template <typename ValT, typename Base, ValT(Base::*Mem)>
-  ValT getOption() const {
-    return OptionRegistry::instance().template get<ValT, Base, Mem>();
-  }
+  /// Access the object which can disable optional passes and individual
+  /// optimizations at compile time.
+  OptPassGate &getOptPassGate() const;
 
-  /// \brief Access the object which manages optimization bisection for failure
-  /// analysis.
-  OptBisect &getOptBisect();
+  /// Set the object which can disable optional passes and individual
+  /// optimizations at compile time.
+  ///
+  /// The lifetime of the object must be guaranteed to extend as long as the
+  /// LLVMContext is used by compilation.
+  void setOptPassGate(OptPassGate&);
+
 private:
   // Module needs access to the add/removeModule methods.
   friend class Module;

@@ -1,9 +1,8 @@
 //===- Signals.cpp - Signal Handling support --------------------*- C++ -*-===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -15,18 +14,20 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Config/config.h"
+#include "llvm/Config/llvm-config.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/FormatAdapters.h"
+#include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Mutex.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/Options.h"
 #include <vector>
 
 //===----------------------------------------------------------------------===//
@@ -100,15 +101,10 @@ static FormattedNumber format_ptr(void *PC) {
   return format_hex((uint64_t)PC, PtrWidth);
 }
 
-static bool printSymbolizedStackTrace(StringRef Argv0,
-                                      void **StackTrace, int Depth,
-                                      llvm::raw_ostream &OS)
-  LLVM_ATTRIBUTE_USED;
-
 /// Helper that launches llvm-symbolizer and symbolizes a backtrace.
-static bool printSymbolizedStackTrace(StringRef Argv0,
-                                      void **StackTrace, int Depth,
-                                      llvm::raw_ostream &OS) {
+LLVM_ATTRIBUTE_USED
+static bool printSymbolizedStackTrace(StringRef Argv0, void **StackTrace,
+                                      int Depth, llvm::raw_ostream &OS) {
   if (DisableSymbolicationFlag)
     return false;
 
@@ -135,8 +131,8 @@ static bool printSymbolizedStackTrace(StringRef Argv0,
   // If we don't know argv0 or the address of main() at this point, try
   // to guess it anyway (it's possible on some platforms).
   std::string MainExecutableName =
-      Argv0.empty() ? sys::fs::getMainExecutable(nullptr, nullptr)
-                    : (std::string)Argv0;
+      sys::fs::exists(Argv0) ? (std::string)Argv0
+                             : sys::fs::getMainExecutable(nullptr, nullptr);
   BumpPtrAllocator Allocator;
   StringSaver StrPool(Allocator);
   std::vector<const char *> Modules(Depth, nullptr);
@@ -159,17 +155,18 @@ static bool printSymbolizedStackTrace(StringRef Argv0,
     }
   }
 
-  Optional<StringRef> Redirects[] = {InputFile.str(), OutputFile.str(), llvm::None};
-  const char *Args[] = {"llvm-symbolizer", "--functions=linkage", "--inlining",
-#ifdef LLVM_ON_WIN32
-                        // Pass --relative-address on Windows so that we don't
-                        // have to add ImageBase from PE file.
-                        // FIXME: Make this the default for llvm-symbolizer.
-                        "--relative-address",
+  Optional<StringRef> Redirects[] = {StringRef(InputFile),
+                                     StringRef(OutputFile), StringRef("")};
+  StringRef Args[] = {"llvm-symbolizer", "--functions=linkage", "--inlining",
+#ifdef _WIN32
+                      // Pass --relative-address on Windows so that we don't
+                      // have to add ImageBase from PE file.
+                      // FIXME: Make this the default for llvm-symbolizer.
+                      "--relative-address",
 #endif
-                        "--demangle", nullptr};
+                      "--demangle"};
   int RunResult =
-      sys::ExecuteAndWait(LLVMSymbolizerPath, Args, nullptr, Redirects);
+      sys::ExecuteAndWait(LLVMSymbolizerPath, Args, None, Redirects);
   if (RunResult != 0)
     return false;
 
@@ -184,8 +181,14 @@ static bool printSymbolizedStackTrace(StringRef Argv0,
   auto CurLine = Lines.begin();
   int frame_no = 0;
   for (int i = 0; i < Depth; i++) {
+    auto PrintLineHeader = [&]() {
+      OS << right_justify(formatv("#{0}", frame_no++).str(),
+                          std::log10(Depth) + 2)
+         << ' ' << format_ptr(StackTrace[i]) << ' ';
+    };
     if (!Modules[i]) {
-      OS << '#' << frame_no++ << ' ' << format_ptr(StackTrace[i]) << '\n';
+      PrintLineHeader();
+      OS << '\n';
       continue;
     }
     // Read pairs of lines (function name and file/line info) until we
@@ -196,7 +199,7 @@ static bool printSymbolizedStackTrace(StringRef Argv0,
       StringRef FunctionName = *CurLine++;
       if (FunctionName.empty())
         break;
-      OS << '#' << frame_no++ << ' ' << format_ptr(StackTrace[i]) << ' ';
+      PrintLineHeader();
       if (!FunctionName.startswith("??"))
         OS << FunctionName << ' ';
       if (CurLine == Lines.end())
@@ -216,6 +219,6 @@ static bool printSymbolizedStackTrace(StringRef Argv0,
 #ifdef LLVM_ON_UNIX
 #include "Unix/Signals.inc"
 #endif
-#ifdef LLVM_ON_WIN32
+#ifdef _WIN32
 #include "Windows/Signals.inc"
 #endif

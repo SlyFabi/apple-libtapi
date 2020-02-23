@@ -1,9 +1,8 @@
 //===--- LivePhysRegs.cpp - Live Physical Register Set --------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -14,22 +13,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/LivePhysRegs.h"
+#include "llvm/CodeGen/LiveRegUnits.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBundle.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace llvm;
 
 
-/// \brief Remove all registers from the set that get clobbered by the register
+/// Remove all registers from the set that get clobbered by the register
 /// mask.
 /// The clobbers set will be the list of live registers clobbered
 /// by the regmask.
 void LivePhysRegs::removeRegsInMask(const MachineOperand &MO,
-        SmallVectorImpl<std::pair<unsigned, const MachineOperand*>> *Clobbers) {
-  SparseSet<unsigned>::iterator LRI = LiveRegs.begin();
+    SmallVectorImpl<std::pair<MCPhysReg, const MachineOperand*>> *Clobbers) {
+  RegisterSet::iterator LRI = LiveRegs.begin();
   while (LRI != LiveRegs.end()) {
     if (MO.clobbersPhysReg(*LRI)) {
       if (Clobbers)
@@ -42,28 +43,23 @@ void LivePhysRegs::removeRegsInMask(const MachineOperand &MO,
 
 /// Remove defined registers and regmask kills from the set.
 void LivePhysRegs::removeDefs(const MachineInstr &MI) {
-  for (ConstMIBundleOperands O(MI); O.isValid(); ++O) {
-    if (O->isReg()) {
-      if (!O->isDef())
-        continue;
-      unsigned Reg = O->getReg();
-      if (!TargetRegisterInfo::isPhysicalRegister(Reg))
-        continue;
-      removeReg(Reg);
-    } else if (O->isRegMask())
-      removeRegsInMask(*O);
+  for (const MachineOperand &MOP : phys_regs_and_masks(MI)) {
+    if (MOP.isRegMask()) {
+      removeRegsInMask(MOP);
+      continue;
+    }
+
+    if (MOP.isDef())
+      removeReg(MOP.getReg());
   }
 }
 
 /// Add uses to the set.
 void LivePhysRegs::addUses(const MachineInstr &MI) {
-  for (ConstMIBundleOperands O(MI); O.isValid(); ++O) {
-    if (!O->isReg() || !O->readsReg())
+  for (const MachineOperand &MOP : phys_regs_and_masks(MI)) {
+    if (!MOP.isReg() || !MOP.readsReg())
       continue;
-    unsigned Reg = O->getReg();
-    if (!TargetRegisterInfo::isPhysicalRegister(Reg))
-      continue;
-    addReg(Reg);
+    addReg(MOP.getReg());
   }
 }
 
@@ -82,12 +78,12 @@ void LivePhysRegs::stepBackward(const MachineInstr &MI) {
 /// on accurate kill flags. If possible use stepBackward() instead of this
 /// function.
 void LivePhysRegs::stepForward(const MachineInstr &MI,
-        SmallVectorImpl<std::pair<unsigned, const MachineOperand*>> &Clobbers) {
+    SmallVectorImpl<std::pair<MCPhysReg, const MachineOperand*>> &Clobbers) {
   // Remove killed registers from the set.
   for (ConstMIBundleOperands O(MI); O.isValid(); ++O) {
-    if (O->isReg()) {
-      unsigned Reg = O->getReg();
-      if (!TargetRegisterInfo::isPhysicalRegister(Reg))
+    if (O->isReg() && !O->isDebug()) {
+      Register Reg = O->getReg();
+      if (!Register::isPhysicalRegister(Reg))
         continue;
       if (O->isDef()) {
         // Note, dead defs are still recorded.  The caller should decide how to
@@ -105,14 +101,18 @@ void LivePhysRegs::stepForward(const MachineInstr &MI,
 
   // Add defs to the set.
   for (auto Reg : Clobbers) {
-    // Skip dead defs.  They shouldn't be added to the set.
+    // Skip dead defs and registers clobbered by regmasks. They shouldn't
+    // be added to the set.
     if (Reg.second->isReg() && Reg.second->isDead())
+      continue;
+    if (Reg.second->isRegMask() &&
+        MachineOperand::clobbersPhysReg(Reg.second->getRegMask(), Reg.first))
       continue;
     addReg(Reg.first);
   }
 }
 
-/// Prin the currently live registers to OS.
+/// Print the currently live registers to OS.
 void LivePhysRegs::print(raw_ostream &OS) const {
   OS << "Live Registers:";
   if (!TRI) {
@@ -137,7 +137,7 @@ LLVM_DUMP_METHOD void LivePhysRegs::dump() const {
 #endif
 
 bool LivePhysRegs::available(const MachineRegisterInfo &MRI,
-                             unsigned Reg) const {
+                             MCPhysReg Reg) const {
   if (LiveRegs.count(Reg))
     return false;
   if (MRI.isReserved(Reg))
@@ -152,7 +152,7 @@ bool LivePhysRegs::available(const MachineRegisterInfo &MRI,
 /// Add live-in registers of basic block \p MBB to \p LiveRegs.
 void LivePhysRegs::addBlockLiveIns(const MachineBasicBlock &MBB) {
   for (const auto &LI : MBB.liveins()) {
-    unsigned Reg = LI.PhysReg;
+    MCPhysReg Reg = LI.PhysReg;
     LaneBitmask Mask = LI.LaneMask;
     MCSubRegIndexIterator S(Reg, TRI);
     assert(Mask.any() && "Invalid livein mask");
@@ -288,10 +288,10 @@ void llvm::recomputeLivenessFlags(MachineBasicBlock &MBB) {
       if (!MO->isReg() || !MO->isDef() || MO->isDebug())
         continue;
 
-      unsigned Reg = MO->getReg();
+      Register Reg = MO->getReg();
       if (Reg == 0)
         continue;
-      assert(TargetRegisterInfo::isPhysicalRegister(Reg));
+      assert(Register::isPhysicalRegister(Reg));
 
       bool IsNotLive = LiveRegs.available(MRI, Reg);
       MO->setIsDead(IsNotLive);
@@ -305,10 +305,10 @@ void llvm::recomputeLivenessFlags(MachineBasicBlock &MBB) {
       if (!MO->isReg() || !MO->readsReg() || MO->isDebug())
         continue;
 
-      unsigned Reg = MO->getReg();
+      Register Reg = MO->getReg();
       if (Reg == 0)
         continue;
-      assert(TargetRegisterInfo::isPhysicalRegister(Reg));
+      assert(Register::isPhysicalRegister(Reg));
 
       bool IsNotLive = LiveRegs.available(MRI, Reg);
       MO->setIsKill(IsNotLive);

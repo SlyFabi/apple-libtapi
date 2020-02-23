@@ -1,9 +1,8 @@
 //===- InstCombinePHI.cpp -------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -17,11 +16,16 @@
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/PatternMatch.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Transforms/Utils/Local.h"
 using namespace llvm;
 using namespace llvm::PatternMatch;
 
 #define DEBUG_TYPE "instcombine"
+
+static cl::opt<unsigned>
+MaxNumPhis("instcombine-max-num-phis", cl::init(512),
+           cl::desc("Maximum number phis to handle in intptr/ptrint folding"));
 
 /// The PHI arguments will be folded into a single operation with a PHI node
 /// as input. The debug location of the single operation will be the merged
@@ -303,7 +307,7 @@ Instruction *InstCombiner::FoldPHIArgLoadIntoPHI(PHINode &PN) {
   // visitLoadInst will propagate an alignment onto the load when TD is around,
   // and if TD isn't around, we can't handle the mixed case.
   bool isVolatile = FirstLI->isVolatile();
-  unsigned LoadAlignment = FirstLI->getAlignment();
+  MaybeAlign LoadAlignment(FirstLI->getAlignment());
   unsigned LoadAddrSpace = FirstLI->getPointerAddressSpace();
 
   // We can't sink the load if the loaded value could be modified between the
@@ -335,10 +339,10 @@ Instruction *InstCombiner::FoldPHIArgLoadIntoPHI(PHINode &PN) {
 
     // If some of the loads have an alignment specified but not all of them,
     // we can't do the transformation.
-    if ((LoadAlignment != 0) != (LI->getAlignment() != 0))
+    if ((LoadAlignment.hasValue()) != (LI->getAlignment() != 0))
       return nullptr;
 
-    LoadAlignment = std::min(LoadAlignment, LI->getAlignment());
+    LoadAlignment = std::min(LoadAlignment, MaybeAlign(LI->getAlignment()));
 
     // If the PHI is of volatile loads and the load block has multiple
     // successors, sinking it would remove a load of the volatile value from
@@ -356,7 +360,8 @@ Instruction *InstCombiner::FoldPHIArgLoadIntoPHI(PHINode &PN) {
 
   Value *InVal = FirstLI->getOperand(0);
   NewPN->addIncoming(InVal, PN.getIncomingBlock(0));
-  LoadInst *NewLI = new LoadInst(NewPN, "", isVolatile, LoadAlignment);
+  LoadInst *NewLI =
+      new LoadInst(FirstLI->getType(), NewPN, "", isVolatile, LoadAlignment);
 
   unsigned KnownIDs[] = {
     LLVMContext::MD_tbaa,
@@ -368,6 +373,7 @@ Instruction *InstCombiner::FoldPHIArgLoadIntoPHI(PHINode &PN) {
     LLVMContext::MD_align,
     LLVMContext::MD_dereferenceable,
     LLVMContext::MD_dereferenceable_or_null,
+    LLVMContext::MD_access_group,
   };
 
   for (unsigned ID : KnownIDs)
@@ -376,7 +382,7 @@ Instruction *InstCombiner::FoldPHIArgLoadIntoPHI(PHINode &PN) {
   // Add all operands to the new PHI and combine TBAA metadata.
   for (unsigned i = 1, e = PN.getNumIncomingValues(); i != e; ++i) {
     LoadInst *LI = cast<LoadInst>(PN.getIncomingValue(i));
-    combineMetadata(NewLI, LI, KnownIDs);
+    combineMetadata(NewLI, LI, KnownIDs, true);
     Value *NewInVal = LI->getOperand(0);
     if (NewInVal != InVal)
       InVal = nullptr;
@@ -409,7 +415,7 @@ Instruction *InstCombiner::FoldPHIArgLoadIntoPHI(PHINode &PN) {
 Instruction *InstCombiner::FoldPHIArgZextsIntoPHI(PHINode &Phi) {
   // We cannot create a new instruction after the PHI if the terminator is an
   // EHPad because there is no valid insertion point.
-  if (TerminatorInst *TI = Phi.getParent()->getTerminator())
+  if (Instruction *TI = Phi.getParent()->getTerminator())
     if (TI->isEHPad())
       return nullptr;
 
@@ -483,7 +489,7 @@ Instruction *InstCombiner::FoldPHIArgZextsIntoPHI(PHINode &Phi) {
 Instruction *InstCombiner::FoldPHIArgOpIntoPHI(PHINode &PN) {
   // We cannot create a new instruction after the PHI if the terminator is an
   // EHPad because there is no valid insertion point.
-  if (TerminatorInst *TI = PN.getParent()->getTerminator())
+  if (Instruction *TI = PN.getParent()->getTerminator())
     if (TI->isEHPad())
       return nullptr;
 
@@ -763,6 +769,11 @@ Instruction *InstCombiner::SliceUpIllegalIntegerPHI(PHINode &FirstPhi) {
           !isa<ConstantInt>(UserI->getOperand(1)))
         return nullptr;
 
+      // Bail on out of range shifts.
+      unsigned SizeInBits = UserI->getType()->getScalarSizeInBits();
+      if (cast<ConstantInt>(UserI->getOperand(1))->getValue().uge(SizeInBits))
+        return nullptr;
+
       unsigned Shift = cast<ConstantInt>(UserI->getOperand(1))->getZExtValue();
       PHIUsers.push_back(PHIUsageRecord(PHIId, Shift, UserI->user_back()));
     }
@@ -776,10 +787,9 @@ Instruction *InstCombiner::SliceUpIllegalIntegerPHI(PHINode &FirstPhi) {
   // extracted out of it.  First, sort the users by their offset and size.
   array_pod_sort(PHIUsers.begin(), PHIUsers.end());
 
-  DEBUG(dbgs() << "SLICING UP PHI: " << FirstPhi << '\n';
-        for (unsigned i = 1, e = PHIsToSlice.size(); i != e; ++i)
-          dbgs() << "AND USER PHI #" << i << ": " << *PHIsToSlice[i] << '\n';
-    );
+  LLVM_DEBUG(dbgs() << "SLICING UP PHI: " << FirstPhi << '\n';
+             for (unsigned i = 1, e = PHIsToSlice.size(); i != e; ++i) dbgs()
+             << "AND USER PHI #" << i << ": " << *PHIsToSlice[i] << '\n';);
 
   // PredValues - This is a temporary used when rewriting PHI nodes.  It is
   // hoisted out here to avoid construction/destruction thrashing.
@@ -860,8 +870,8 @@ Instruction *InstCombiner::SliceUpIllegalIntegerPHI(PHINode &FirstPhi) {
       }
       PredValues.clear();
 
-      DEBUG(dbgs() << "  Made element PHI for offset " << Offset << ": "
-                   << *EltPHI << '\n');
+      LLVM_DEBUG(dbgs() << "  Made element PHI for offset " << Offset << ": "
+                        << *EltPHI << '\n');
       ExtractedVals[LoweredPHIRecord(PN, Offset, Ty)] = EltPHI;
     }
 

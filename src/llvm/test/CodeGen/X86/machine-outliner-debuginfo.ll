@@ -44,7 +44,7 @@ declare void @llvm.dbg.declare(metadata, metadata, metadata) #1
 
 declare void @llvm.dbg.value(metadata, i64, metadata, metadata) #1
 
-attributes #0 = { noredzone nounwind ssp uwtable "no-frame-pointer-elim"="true" }
+attributes #0 = { noredzone nounwind ssp uwtable "frame-pointer"="all" }
 
 !llvm.dbg.cu = !{!2}
 !llvm.module.flags = !{!7, !8, !9}
@@ -61,7 +61,7 @@ attributes #0 = { noredzone nounwind ssp uwtable "no-frame-pointer-elim"="true" 
 !8 = !{i32 2, !"Debug Info Version", i32 3}
 !9 = !{i32 1, !"PIC Level", i32 2}
 !10 = !{!"clang version 5.0.0"}
-!11 = distinct !DISubprogram(name: "main", scope: !3, file: !3, line: 4, type: !12, isLocal: false, isDefinition: true, scopeLine: 4, flags: DIFlagPrototyped, isOptimized: false, unit: !2, variables: !4)
+!11 = distinct !DISubprogram(name: "main", scope: !3, file: !3, line: 4, type: !12, isLocal: false, isDefinition: true, scopeLine: 4, flags: DIFlagPrototyped, isOptimized: false, unit: !2, retainedNodes: !4)
 !12 = !DISubroutineType(types: !13)
 !13 = !{!6}
 !14 = !DILocation(line: 7, column: 4, scope: !11)

@@ -1,15 +1,17 @@
 //===-- core_main.cpp - Core Index Tool testbed ---------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
 #include "JSONAggregation.h"
 #include "indexstore/IndexStoreCXX.h"
+#include "clang-c/Dependencies.h"
 #include "clang/DirectoryWatcher/DirectoryWatcher.h"
+#include "clang/AST/Mangle.h"
+#include "clang/Basic/LangOptions.h"
 #include "clang/CodeGen/ObjectFilePCHContainerOperations.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -21,26 +23,16 @@
 #include "clang/Index/IndexRecordReader.h"
 #include "clang/Index/IndexUnitReader.h"
 #include "clang/Index/USRGeneration.h"
-#include "clang/Index/CodegenNameGenerator.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Serialization/ASTReader.h"
+#include "llvm/ADT/FunctionExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/PrettyStackTrace.h"
-
-#define HAVE_CORESERVICES 0
-
-#if defined(__has_include)
-#if __has_include(<CoreServices/CoreServices.h>)
-
-#include <CoreServices/CoreServices.h>
-#undef HAVE_CORESERVICES
-#define HAVE_CORESERVICES 1
-
-#endif
-#endif
+#include <thread>
 
 using namespace clang;
 using namespace clang::index;
@@ -57,6 +49,7 @@ enum class ActionType {
   PrintUnit,
   PrintStoreFormatVersion,
   AggregateAsJSON,
+  ScanDeps,
   WatchDir,
 };
 
@@ -77,6 +70,8 @@ Action(cl::desc("Action:"), cl::init(ActionType::None),
                      "print-store-format-version", "Print store format version"),
           clEnumValN(ActionType::AggregateAsJSON,
                      "aggregate-json", "Aggregate index data in JSON format"),
+          clEnumValN(ActionType::ScanDeps, "scan-deps",
+                     "Get file dependencies"),
           clEnumValN(ActionType::WatchDir,
                      "watch-dir", "Watch directory for file events")),
        cl::cat(IndexTestCoreCategory));
@@ -117,30 +112,37 @@ FilePathAndRange("filepath",
 static void printSymbolInfo(SymbolInfo SymInfo, raw_ostream &OS);
 static void printSymbolNameAndUSR(const Decl *D, ASTContext &Ctx,
                                   raw_ostream &OS);
+static void printSymbolNameAndUSR(const clang::Module *Mod, raw_ostream &OS);
 
 namespace {
 
 class PrintIndexDataConsumer : public IndexDataConsumer {
   raw_ostream &OS;
-  std::unique_ptr<CodegenNameGenerator> CGNameGen;
+  std::unique_ptr<ASTNameGenerator> ASTNameGen;
+  std::shared_ptr<Preprocessor> PP;
 
 public:
   PrintIndexDataConsumer(raw_ostream &OS) : OS(OS) {
   }
 
   void initialize(ASTContext &Ctx) override {
-    CGNameGen.reset(new CodegenNameGenerator(Ctx));
+    ASTNameGen.reset(new ASTNameGenerator(Ctx));
   }
 
-  bool handleDeclOccurence(const Decl *D, SymbolRoleSet Roles,
-                           ArrayRef<SymbolRelation> Relations,
-                           FileID FID, unsigned Offset,
-                           ASTNodeInfo ASTNode) override {
+  void setPreprocessor(std::shared_ptr<Preprocessor> PP) override {
+    this->PP = std::move(PP);
+  }
+
+  bool handleDeclOccurrence(const Decl *D, SymbolRoleSet Roles,
+                            ArrayRef<SymbolRelation> Relations,
+                            SourceLocation Loc, ASTNodeInfo ASTNode) override {
     ASTContext &Ctx = D->getASTContext();
     SourceManager &SM = Ctx.getSourceManager();
 
-    unsigned Line = SM.getLineNumber(FID, Offset);
-    unsigned Col = SM.getColumnNumber(FID, Offset);
+    Loc = SM.getFileLoc(Loc);
+    FileID FID = SM.getFileID(Loc);
+    unsigned Line = SM.getLineNumber(FID, SM.getFileOffset(Loc));
+    unsigned Col = SM.getColumnNumber(FID, SM.getFileOffset(Loc));
     OS << Line << ':' << Col << " | ";
 
     printSymbolInfo(getSymbolInfo(D), OS);
@@ -149,7 +151,7 @@ public:
     printSymbolNameAndUSR(D, Ctx, OS);
     OS << " | ";
 
-    if (CGNameGen->writeName(D, OS))
+    if (ASTNameGen->writeName(D, OS))
       OS << "<no-cgname>";
     OS << " | ";
 
@@ -169,23 +171,58 @@ public:
     return true;
   }
 
-  bool handleModuleOccurence(const ImportDecl *ImportD, SymbolRoleSet Roles,
-                             FileID FID, unsigned Offset) override {
+  bool handleModuleOccurrence(const ImportDecl *ImportD,
+                              const clang::Module *Mod, SymbolRoleSet Roles,
+                              SourceLocation Loc) override {
     ASTContext &Ctx = ImportD->getASTContext();
     SourceManager &SM = Ctx.getSourceManager();
 
-    unsigned Line = SM.getLineNumber(FID, Offset);
-    unsigned Col = SM.getColumnNumber(FID, Offset);
+    Loc = SM.getFileLoc(Loc);
+    FileID FID = SM.getFileID(Loc);
+    unsigned Line = SM.getLineNumber(FID, SM.getFileOffset(Loc));
+    unsigned Col = SM.getColumnNumber(FID, SM.getFileOffset(Loc));
     OS << Line << ':' << Col << " | ";
 
     printSymbolInfo(getSymbolInfo(ImportD), OS);
     OS << " | ";
 
-    OS << ImportD->getImportedModule()->getFullModuleName() << " | ";
+    printSymbolNameAndUSR(Mod, OS);
+    OS << " | ";
 
     printSymbolRoles(Roles, OS);
     OS << " |\n";
 
+    return true;
+  }
+
+  bool handleMacroOccurrence(const IdentifierInfo *Name, const MacroInfo *MI,
+                             SymbolRoleSet Roles, SourceLocation Loc) override {
+    assert(PP);
+    SourceManager &SM = PP->getSourceManager();
+
+    Loc = SM.getFileLoc(Loc);
+    FileID FID = SM.getFileID(Loc);
+    unsigned Line = SM.getLineNumber(FID, SM.getFileOffset(Loc));
+    unsigned Col = SM.getColumnNumber(FID, SM.getFileOffset(Loc));
+    OS << Line << ':' << Col << " | ";
+
+    printSymbolInfo(getSymbolInfoForMacro(*MI), OS);
+    OS << " | ";
+
+    OS << Name->getName();
+    OS << " | ";
+
+    SmallString<256> USRBuf;
+    if (generateUSRForMacro(Name->getName(), MI->getDefinitionLoc(), SM,
+                            USRBuf)) {
+      OS << "<no-usr>";
+    } else {
+      OS << USRBuf;
+    }
+    OS << " | ";
+
+    printSymbolRoles(Roles, OS);
+    OS << " |\n";
     return true;
   }
 };
@@ -207,11 +244,11 @@ static void dumpModuleFileInputs(serialization::ModuleFile &Mod,
   });
 }
 
-static bool printSourceSymbols(ArrayRef<const char *> Args,
-                               bool dumpModuleImports,
-                               bool indexLocals) {
+static bool printSourceSymbols(const char *Executable,
+                               ArrayRef<const char *> Args,
+                               bool dumpModuleImports, bool indexLocals) {
   SmallVector<const char *, 4> ArgsWithProgName;
-  ArgsWithProgName.push_back("clang");
+  ArgsWithProgName.push_back(Executable);
   ArgsWithProgName.append(Args.begin(), Args.end());
   IntrusiveRefCntPtr<DiagnosticsEngine>
     Diags(CompilerInstance::createDiagnostics(new DiagnosticOptions));
@@ -223,9 +260,8 @@ static bool printSourceSymbols(ArrayRef<const char *> Args,
   auto DataConsumer = std::make_shared<PrintIndexDataConsumer>(OS);
   IndexingOptions IndexOpts;
   IndexOpts.IndexFunctionLocals = indexLocals;
-  std::unique_ptr<FrontendAction> IndexAction;
-  IndexAction = createIndexingAction(DataConsumer, IndexOpts,
-                                     /*WrappedAction=*/nullptr);
+  std::unique_ptr<FrontendAction> IndexAction =
+      createIndexingAction(DataConsumer, IndexOpts);
 
   auto PCHContainerOps = std::make_shared<PCHContainerOperations>();
   std::unique_ptr<ASTUnit> Unit(ASTUnit::LoadFromCompilerInvocationAction(
@@ -238,7 +274,7 @@ static bool printSourceSymbols(ArrayRef<const char *> Args,
     if (auto Reader = Unit->getASTReader()) {
       Reader->getModuleManager().visit([&](serialization::ModuleFile &Mod) -> bool {
         OS << "==== Module " << Mod.ModuleName << " ====\n";
-        indexModuleFile(Mod, *Reader, DataConsumer, IndexOpts);
+        indexModuleFile(Mod, *Reader, *DataConsumer, IndexOpts);
         dumpModuleFileInputs(Mod, *Reader, OS);
         return true; // skip module dependencies.
       });
@@ -253,7 +289,7 @@ static bool printSourceSymbolsFromModule(StringRef modulePath,
   FileSystemOptions FileSystemOpts;
   auto pchContOps = std::make_shared<PCHContainerOperations>();
   // Register the support for object-file-wrapped Clang modules.
-  pchContOps->registerReader(llvm::make_unique<ObjectFilePCHContainerReader>());
+  pchContOps->registerReader(std::make_unique<ObjectFilePCHContainerReader>());
   auto pchRdr = pchContOps->getReaderOrNull(format);
   if (!pchRdr) {
     errs() << "unknown module format: " << format << '\n';
@@ -266,7 +302,7 @@ static bool printSourceSymbolsFromModule(StringRef modulePath,
       modulePath, *pchRdr, ASTUnit::LoadASTOnly, Diags,
       FileSystemOpts, /*UseDebugInfo=*/false,
       /*OnlyLocalDecls=*/true, None,
-      /*CaptureDiagnostics=*/false,
+      CaptureDiagsKind::None,
       /*AllowPCHWithCompilerErrors=*/true,
       /*UserFilesAreVolatile=*/false);
   if (!AU) {
@@ -274,14 +310,12 @@ static bool printSourceSymbolsFromModule(StringRef modulePath,
     return true;
   }
 
-  auto DataConsumer = std::make_shared<PrintIndexDataConsumer>(outs());
+  PrintIndexDataConsumer DataConsumer(outs());
   IndexingOptions IndexOpts;
   indexASTUnit(*AU, DataConsumer, IndexOpts);
 
   return false;
 }
-
-#if INDEXSTORE_HAS_BLOCKS
 
 //===----------------------------------------------------------------------===//
 // Print Record
@@ -466,8 +500,10 @@ static int printUnit(StringRef Filename, raw_ostream &OS) {
     OS << " | ";
     if (!Dep.ModuleName.empty())
       OS << Dep.ModuleName << " | ";
-    OS << Dep.FilePath << " | " << Dep.UnitOrRecordName << " | ";
-    OS << Dep.ModTime << " | " << Dep.FileSize << '\n';
+    OS << Dep.FilePath;
+    if (!Dep.UnitOrRecordName.empty())
+      OS << " | " << Dep.UnitOrRecordName;
+    OS << '\n';
     ++NumDepends;
     return true;
   });
@@ -523,8 +559,10 @@ static bool printStoreUnit(indexstore::IndexStore &Store, StringRef UnitName,
     OS << " | ";
     if (!Dep.getModuleName().empty())
       OS << Dep.getModuleName() << " | ";
-    OS << Dep.getFilePath() << " | " << Dep.getName() << " | ";
-    OS << Dep.getModificationTime() << '\n';
+    OS << Dep.getFilePath();
+    if (!Dep.getName().empty())
+      OS << " | " << Dep.getName();
+    OS << '\n';
     ++NumDepends;
     return true;
   });
@@ -561,25 +599,6 @@ static int printStoreUnits(StringRef StorePath, raw_ostream &OS) {
   return !Success;
 }
 
-
-#else
-
-static int printUnit(StringRef Filename, raw_ostream &OS) {
-  return 1;
-}
-
-static int printStoreUnits(StringRef StorePath, raw_ostream &OS) {
-  return 1;
-}
-
-static int printStoreFileRecord(StringRef storePath, StringRef filePath,
-                                Optional<unsigned> lineStart, unsigned lineCount,
-                                raw_ostream &OS) {
-  return 1;
-}
-
-#endif
-
 //===----------------------------------------------------------------------===//
 // Helper Utils
 //===----------------------------------------------------------------------===//
@@ -611,7 +630,82 @@ static void printSymbolNameAndUSR(const Decl *D, ASTContext &Ctx,
   }
 }
 
-#if INDEXSTORE_HAS_BLOCKS
+static void printSymbolNameAndUSR(const clang::Module *Mod, raw_ostream &OS) {
+  assert(Mod);
+  OS << Mod->getFullModuleName() << " | ";
+  generateFullUSRForModule(Mod, OS);
+}
+
+static int scanDeps(ArrayRef<const char *> Args, std::string WorkingDirectory) {
+  CXDependencyScannerService Service =
+      clang_experimental_DependencyScannerService_create_v0(
+          CXDependencyMode_Full);
+  CXDependencyScannerWorker Worker =
+      clang_experimental_DependencyScannerWorker_create_v0(Service);
+  CXString Error;
+
+  auto Callback = [&](CXModuleDependencySet *MDS) {
+    llvm::outs() << "modules:\n";
+    for (const auto &M : llvm::makeArrayRef(MDS->Modules, MDS->Count)) {
+      llvm::outs() << "  module:\n"
+                   << "    name: " << clang_getCString(M.Name) << "\n"
+                   << "    context-hash: " << clang_getCString(M.ContextHash)
+                   << "\n"
+                   << "    module-map-path: "
+                   << clang_getCString(M.ModuleMapPath) << "\n"
+                   << "    module-deps:\n";
+      for (const auto &ModuleName :
+           llvm::makeArrayRef(M.ModuleDeps->Strings, M.ModuleDeps->Count))
+        llvm::outs() << "      " << clang_getCString(ModuleName) << "\n";
+      llvm::outs() << "    file-deps:\n";
+      for (const auto &FileName :
+           llvm::makeArrayRef(M.FileDeps->Strings, M.FileDeps->Count))
+        llvm::outs() << "      " << clang_getCString(FileName) << "\n";
+      llvm::outs() << "    build-args:";
+      for (const auto &Arg : llvm::makeArrayRef(M.BuildArguments->Strings,
+                                                M.BuildArguments->Count))
+        llvm::outs() << " " << clang_getCString(Arg);
+      llvm::outs() << "\n";
+    }
+    clang_experimental_ModuleDependencySet_dispose(MDS);
+  };
+
+  auto CB =
+      functionObjectToCCallbackRef<void(CXModuleDependencySet *)>(Callback);
+
+  CXFileDependencies *Result =
+      clang_experimental_DependencyScannerWorker_getFileDependencies_v0(
+          Worker, Args.size(), Args.data(), WorkingDirectory.c_str(),
+          CB.Callback, CB.Context, &Error);
+  if (!Result) {
+    llvm::errs() << "error: failed to get dependencies\n";
+    llvm::errs() << clang_getCString(Error) << "\n";
+    clang_disposeString(Error);
+    return 1;
+  }
+  llvm::outs() << "dependencies:\n";
+  llvm::outs() << "  context-hash: " << clang_getCString(Result->ContextHash)
+               << "\n"
+               << "  module-deps:\n";
+  for (const auto &ModuleName : llvm::makeArrayRef(Result->ModuleDeps->Strings,
+                                                   Result->ModuleDeps->Count))
+    llvm::outs() << "    " << clang_getCString(ModuleName) << "\n";
+  llvm::outs() << "  file-deps:\n";
+  for (const auto &FileName :
+       llvm::makeArrayRef(Result->FileDeps->Strings, Result->FileDeps->Count))
+    llvm::outs() << "    " << clang_getCString(FileName) << "\n";
+  llvm::outs() << "  additional-build-args:";
+  for (const auto &Arg :
+       llvm::makeArrayRef(Result->AdditionalArguments->Strings,
+                          Result->AdditionalArguments->Count))
+    llvm::outs() << " " << clang_getCString(Arg);
+  llvm::outs() << "\n";
+
+  clang_experimental_FileDependencies_dispose(Result);
+  clang_experimental_DependencyScannerWorker_dispose_v0(Worker);
+  clang_experimental_DependencyScannerService_dispose_v0(Service);
+  return 0;
+}
 
 static void printSymbol(const IndexRecordDecl &Rec, raw_ostream &OS) {
   printSymbolInfo(Rec.SymInfo, OS);
@@ -694,9 +788,9 @@ static void printSymbol(indexstore::IndexRecordSymbol Sym, raw_ostream &OS) {
     OS << Sym.getCodegenName();
   OS << " | ";
 
-  printSymbolRoles(Sym.getRoles(), OS);
+  printSymbolRoles(getSymbolRoles(Sym.getRoles()), OS);
   OS << " - ";
-  printSymbolRoles(Sym.getRelatedRoles(), OS);
+  printSymbolRoles(getSymbolRoles(Sym.getRelatedRoles()), OS);
   OS << '\n';
 }
 
@@ -723,12 +817,12 @@ static void printSymbol(indexstore::IndexRecordOccurrence Occur, raw_ostream &OS
     return true;
   });
 
-  printSymbolRoles(Occur.getRoles(), OS);
+  printSymbolRoles(getSymbolRoles(Occur.getRoles()), OS);
   OS << " | ";
   OS << "rel: " << NumRelations << '\n';
   Occur.foreachRelation([&](indexstore::IndexSymbolRelation Rel) {
     OS << '\t';
-    printSymbolRoles(Rel.getRoles(), OS);
+    printSymbolRoles(getSymbolRoles(Rel.getRoles()), OS);
     OS << " | ";
     auto Sym = Rel.getSymbol();
     if (Sym.getUSR().empty())
@@ -740,47 +834,35 @@ static void printSymbol(indexstore::IndexRecordOccurrence Occur, raw_ostream &OS
   });
 }
 
-#else
-
-static int printRecord(StringRef Filename, raw_ostream &OS) {
-  return 1;
-}
-static int printStoreRecords(StringRef StorePath, raw_ostream &OS) {
-  return 1;
-}
-
-#endif
-
 static int watchDirectory(StringRef dirPath) {
   raw_ostream &OS = outs();
   auto receiver = [&](ArrayRef<DirectoryWatcher::Event> Events, bool isInitial) {
+    OS << "-- " << Events.size() << " :\n";
     for (auto evt : Events) {
       switch (evt.Kind) {
-        case DirectoryWatcher::EventKind::Added:
-          OS << "added: "; break;
-        case DirectoryWatcher::EventKind::Modified:
+        case DirectoryWatcher::Event::EventKind::Modified:
           OS << "modified: "; break;
-        case DirectoryWatcher::EventKind::Removed:
+        case DirectoryWatcher::Event::EventKind::Removed:
           OS << "removed: "; break;
-        case DirectoryWatcher::EventKind::DirectoryDeleted:
+        case DirectoryWatcher::Event::EventKind::WatchedDirRemoved:
           OS << "dir deleted: "; break;
+        case DirectoryWatcher::Event::EventKind::WatcherGotInvalidated:
+          OS << "watcher got invalidated: "; break;
 
       }
       OS << evt.Filename << '\n';
     }
   };
-  std::string Error;
   auto watcher = DirectoryWatcher::create(dirPath, receiver,
-                                          /*waitInitialSync=*/true, Error);
+                                          /*waitInitialSync=*/true);
   if (!watcher) {
-    errs() << "failed creating directory watcher: " << Error << '\n';
+    errs() << "failed creating directory watcher" << '\n';
     return 1;
   }
-#if HAVE_CORESERVICES
-  dispatch_main();
-#else
-  return 1;
-#endif
+
+  while(1) {
+    std::this_thread::yield();
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -818,6 +900,8 @@ bool deconstructPathAndRange(StringRef input,
 int indextest_core_main(int argc, const char **argv) {
   sys::PrintStackTraceOnErrorSignal(argv[0]);
   PrettyStackTraceProgram X(argc, argv);
+  void *MainAddr = (void*) (intptr_t) indextest_core_main;
+  std::string Executable = llvm::sys::fs::getMainExecutable(argv[0], MainAddr);
 
   assert(argv[1] == StringRef("core"));
   ++argv;
@@ -847,7 +931,9 @@ int indextest_core_main(int argc, const char **argv) {
       errs() << "error: missing compiler args; pass '-- <compiler arguments>'\n";
       return 1;
     }
-    return printSourceSymbols(CompArgs, options::DumpModuleImports, options::IncludeLocals);
+    return printSourceSymbols(Executable.c_str(), CompArgs,
+                              options::DumpModuleImports,
+                              options::IncludeLocals);
   }
 
   if (options::Action == ActionType::PrintRecord) {
@@ -889,11 +975,9 @@ int indextest_core_main(int argc, const char **argv) {
       return printUnit(options::InputFiles[0], outs());
   }
 
-#if INDEXSTORE_HAS_BLOCKS
   if (options::Action == ActionType::PrintStoreFormatVersion) {
     outs() << indexstore::IndexStore::formatVersion() << '\n';
   }
-#endif
 
   if (options::Action == ActionType::AggregateAsJSON) {
     if (options::InputFiles.empty()) {
@@ -910,6 +994,14 @@ int indextest_core_main(int argc, const char **argv) {
       return 1;
     }
     return aggregateDataAsJSON(storePath, OS);
+  }
+  
+  if (options::Action == ActionType::ScanDeps) {
+    if (options::InputFiles.empty()) {
+      errs() << "error: missing working directory\n";
+      return 1;
+    }
+    return scanDeps(CompArgs, options::InputFiles[0]);
   }
 
   if (options::Action == ActionType::WatchDir) {

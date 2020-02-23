@@ -3,9 +3,9 @@
 target datalayout = "e-p:64:64:64-p1:32:32:32-p2:16:16:16-n8:16:32:64"
 
 
-declare void @llvm.memcpy.p0i8.p0i8.i32(i8*, i8*, i32, i32, i1) nounwind
-declare void @llvm.memcpy.p0i8.p1i8.i32(i8*, i8 addrspace(1)*, i32, i32, i1) nounwind
-declare void @llvm.memcpy.p0i8.p2i8.i32(i8*, i8 addrspace(2)*, i32, i32, i1) nounwind
+declare void @llvm.memcpy.p0i8.p0i8.i32(i8*, i8*, i32, i1) nounwind
+declare void @llvm.memcpy.p0i8.p1i8.i32(i8*, i8 addrspace(1)*, i32, i1) nounwind
+declare void @llvm.memcpy.p0i8.p2i8.i32(i8*, i8 addrspace(2)*, i32, i1) nounwind
 
 
 define i32* @combine_redundant_addrspacecast(i32 addrspace(1)* %x) nounwind {
@@ -104,7 +104,7 @@ define <4 x float addrspace(2)*> @combine_addrspacecast_types_vector(<4 x i32 ad
 
 define i32 @canonicalize_addrspacecast([16 x i32] addrspace(1)* %arr) {
 ; CHECK-LABEL: @canonicalize_addrspacecast(
-; CHECK-NEXT: getelementptr inbounds [16 x i32], [16 x i32] addrspace(1)* %arr, i32 0, i32 0
+; CHECK-NEXT: getelementptr [16 x i32], [16 x i32] addrspace(1)* %arr, i32 0, i32 0
 ; CHECK-NEXT: addrspacecast i32 addrspace(1)* %{{[a-zA-Z0-9]+}} to i32*
 ; CHECK-NEXT: load i32, i32*
 ; CHECK-NEXT: ret i32
@@ -127,7 +127,7 @@ declare void @foo(i8*) nounwind
 define i32 @memcpy_addrspacecast() nounwind {
 entry:
   %alloca = alloca i8, i32 48
-  call void @llvm.memcpy.p0i8.p1i8.i32(i8* %alloca, i8 addrspace(1)* addrspacecast (i8 addrspace(2)* getelementptr inbounds ([60 x i8], [60 x i8] addrspace(2)* @const_array, i16 0, i16 4) to i8 addrspace(1)*), i32 48, i32 4, i1 false) nounwind
+  call void @llvm.memcpy.p0i8.p1i8.i32(i8* align 4 %alloca, i8 addrspace(1)* align 4 addrspacecast (i8 addrspace(2)* getelementptr inbounds ([60 x i8], [60 x i8] addrspace(2)* @const_array, i16 0, i16 4) to i8 addrspace(1)*), i32 48, i1 false) nounwind
   br label %loop.body
 
 loop.body:

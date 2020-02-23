@@ -1,9 +1,8 @@
 //===- SourceCoverageViewHTML.cpp - A html code coverage view -------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 ///
@@ -45,7 +44,7 @@ std::string escape(StringRef Str, const CoverageViewOptions &Opts) {
   std::string EscapedHTML;
   {
     raw_string_ostream OS{EscapedHTML};
-    PrintHTMLEscaped(TabExpandedResult, OS);
+    printHTMLEscaped(TabExpandedResult, OS);
   }
   return EscapedHTML;
 }
@@ -54,7 +53,7 @@ std::string escape(StringRef Str, const CoverageViewOptions &Opts) {
 std::string tag(const std::string &Name, const std::string &Str,
                 const std::string &ClassName = "") {
   std::string Tag = "<" + Name;
-  if (ClassName != "")
+  if (!ClassName.empty())
     Tag += " class='" + ClassName + "'";
   return Tag + ">" + Str + "</" + Name + ">";
 }
@@ -202,6 +201,9 @@ th, td {
   border-right: solid 1px #eee;
   border-left: solid 1px #eee;
   text-align: left;
+}
+td pre {
+  display: inline-block;
 }
 td:first-child {
   border-left: none;

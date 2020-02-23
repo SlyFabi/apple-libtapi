@@ -219,7 +219,7 @@ SelectorParser::ParseState SelectorParser::stateForToken(const Token &RawTok) {
   case ExpectingRParenOrColon:
     if (RawTok.is(tok::colon))
       return ExpectingRParen;
-  // Fallthrough
+    LLVM_FALLTHROUGH;
   case ExpectingRParen:
     if (RawTok.is(tok::r_paren)) {
       // We found the selector that we were looking for.
@@ -298,7 +298,7 @@ static void findTextualMatchesInComment(
                            LangOpts)
           .str();
   OldSymbolOccurrence::OccurrenceKind Kind =
-      RawComment(SM, CommentRange, /*Merged=*/false, /*ParseAllComments=*/false)
+      RawComment(SM, CommentRange, LangOpts.CommentOpts, /*Merged=*/false)
               .isDocumentation()
           ? OldSymbolOccurrence::MatchingDocComment
           : OldSymbolOccurrence::MatchingComment;
@@ -417,7 +417,7 @@ static void findInclusionDirectiveOccurrence(
   RawLex.setParsingPreprocessorDirective(true);
   RawLex.LexIncludeFilename(RawTok);
   if (RawTok.isNot(tok::string_literal) &&
-      RawTok.isNot(tok::angle_string_literal))
+      RawTok.isNot(tok::header_name))
     return;
   StringRef Filename = llvm::sys::path::filename(
       StringRef(RawTok.getLiteralData(), RawTok.getLength())

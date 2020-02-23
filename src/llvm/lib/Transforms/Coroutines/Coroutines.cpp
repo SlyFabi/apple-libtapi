@@ -1,9 +1,8 @@
 //===- Coroutines.cpp -----------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 //
@@ -11,8 +10,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Transforms/Coroutines.h"
 #include "CoroInstr.h"
 #include "CoroInternal.h"
+#include "llvm-c/Transforms/Coroutines.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/CallGraph.h"
@@ -29,9 +30,9 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Transforms/Coroutines.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Utils/Local.h"
@@ -42,39 +43,39 @@
 using namespace llvm;
 
 void llvm::initializeCoroutines(PassRegistry &Registry) {
-  initializeCoroEarlyPass(Registry);
-  initializeCoroSplitPass(Registry);
-  initializeCoroElidePass(Registry);
-  initializeCoroCleanupPass(Registry);
+  initializeCoroEarlyLegacyPass(Registry);
+  initializeCoroSplitLegacyPass(Registry);
+  initializeCoroElideLegacyPass(Registry);
+  initializeCoroCleanupLegacyPass(Registry);
 }
 
 static void addCoroutineOpt0Passes(const PassManagerBuilder &Builder,
                                    legacy::PassManagerBase &PM) {
-  PM.add(createCoroSplitPass());
-  PM.add(createCoroElidePass());
+  PM.add(createCoroSplitLegacyPass());
+  PM.add(createCoroElideLegacyPass());
 
   PM.add(createBarrierNoopPass());
-  PM.add(createCoroCleanupPass());
+  PM.add(createCoroCleanupLegacyPass());
 }
 
 static void addCoroutineEarlyPasses(const PassManagerBuilder &Builder,
                                     legacy::PassManagerBase &PM) {
-  PM.add(createCoroEarlyPass());
+  PM.add(createCoroEarlyLegacyPass());
 }
 
 static void addCoroutineScalarOptimizerPasses(const PassManagerBuilder &Builder,
                                               legacy::PassManagerBase &PM) {
-  PM.add(createCoroElidePass());
+  PM.add(createCoroElideLegacyPass());
 }
 
 static void addCoroutineSCCPasses(const PassManagerBuilder &Builder,
                                   legacy::PassManagerBase &PM) {
-  PM.add(createCoroSplitPass());
+  PM.add(createCoroSplitLegacyPass());
 }
 
 static void addCoroutineOptimizerLastPasses(const PassManagerBuilder &Builder,
                                             legacy::PassManagerBase &PM) {
-  PM.add(createCoroCleanupPass());
+  PM.add(createCoroCleanupLegacyPass());
 }
 
 void llvm::addCoroutinePassesToExtensionPoints(PassManagerBuilder &Builder) {
@@ -133,6 +134,7 @@ static bool isCoroutineIntrinsicName(StringRef Name) {
       "llvm.coro.id",
       "llvm.coro.id.retcon",
       "llvm.coro.id.retcon.once",
+      "llvm.coro.noop",
       "llvm.coro.param",
       "llvm.coro.prepare.retcon",
       "llvm.coro.promise",
@@ -149,8 +151,8 @@ static bool isCoroutineIntrinsicName(StringRef Name) {
 
 // Verifies if a module has named values listed. Also, in debug mode verifies
 // that names are intrinsic names.
-bool coro::declaresIntrinsics(Module &M,
-                              std::initializer_list<StringRef> List) {
+bool coro::declaresIntrinsics(const Module &M,
+                              const std::initializer_list<StringRef> List) {
   for (StringRef Name : List) {
     assert(isCoroutineIntrinsicName(Name) && "not a coroutine intrinsic");
     if (M.getNamedValue(Name))
@@ -189,15 +191,15 @@ static void buildCGN(CallGraph &CG, CallGraphNode *Node) {
 
   // Look for calls by this function.
   for (Instruction &I : instructions(F))
-    if (CallSite CS = CallSite(cast<Value>(&I))) {
-      const Function *Callee = CS.getCalledFunction();
+    if (auto *Call = dyn_cast<CallBase>(&I)) {
+      const Function *Callee = Call->getCalledFunction();
       if (!Callee || !Intrinsic::isLeaf(Callee->getIntrinsicID()))
         // Indirect calls of intrinsics are not allowed so no need to check.
         // We can be more precise here by using TargetArg returned by
         // Intrinsic::isLeaf.
-        Node->addCalledFunction(CS, CG.getCallsExternalNode());
+        Node->addCalledFunction(Call, CG.getCallsExternalNode());
       else if (!Callee->isIntrinsic())
-        Node->addCalledFunction(CS, CG.getOrInsertFunction(Callee));
+        Node->addCalledFunction(Call, CG.getOrInsertFunction(Callee));
     }
 }
 
@@ -512,6 +514,7 @@ Value *coro::Shape::emitAlloc(IRBuilder<> &Builder, Value *Size,
     return Call;
   }
   }
+  llvm_unreachable("Unknown coro::ABI enum");
 }
 
 void coro::Shape::emitDealloc(IRBuilder<> &Builder, Value *Ptr,
@@ -531,6 +534,7 @@ void coro::Shape::emitDealloc(IRBuilder<> &Builder, Value *Ptr,
     return;
   }
   }
+  llvm_unreachable("Unknown coro::ABI enum");
 }
 
 LLVM_ATTRIBUTE_NORETURN
@@ -628,4 +632,20 @@ void AnyCoroIdRetconInst::checkWellFormed() const {
   checkWFRetconPrototype(this, getArgOperand(PrototypeArg));
   checkWFAlloc(this, getArgOperand(AllocArg));
   checkWFDealloc(this, getArgOperand(DeallocArg));
+}
+
+void LLVMAddCoroEarlyPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createCoroEarlyLegacyPass());
+}
+
+void LLVMAddCoroSplitPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createCoroSplitLegacyPass());
+}
+
+void LLVMAddCoroElidePass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createCoroElideLegacyPass());
+}
+
+void LLVMAddCoroCleanupPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createCoroCleanupLegacyPass());
 }

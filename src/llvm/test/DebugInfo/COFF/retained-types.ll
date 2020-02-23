@@ -1,4 +1,5 @@
-; RUN: llc < %s -filetype=obj | llvm-readobj - -codeview | FileCheck %s
+; RUN: llc < %s -filetype=obj | llvm-readobj - --codeview | FileCheck %s
+; RUN: llc < %s | llvm-mc -filetype=obj --triple=x86_64-windows | llvm-readobj - --codeview | FileCheck %s
 
 ; This test checks that types which are used in expressions, but for which
 ; there are no variables, known as retained types, get emitted.
@@ -63,7 +64,7 @@ entry:
 ; Function Attrs: nounwind readnone
 declare void @llvm.dbg.declare(metadata, metadata, metadata) #1
 
-attributes #0 = { nounwind uwtable "disable-tail-calls"="false" "less-precise-fpmad"="false" "no-frame-pointer-elim"="false" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
+attributes #0 = { nounwind uwtable "disable-tail-calls"="false" "less-precise-fpmad"="false" "frame-pointer"="none" "no-infs-fp-math"="false" "no-jump-tables"="false" "no-nans-fp-math"="false" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+fxsr,+mmx,+sse,+sse2,+x87" "unsafe-fp-math"="false" "use-soft-float"="false" }
 attributes #1 = { nounwind readnone }
 
 !llvm.dbg.cu = !{!0}
@@ -83,7 +84,7 @@ attributes #1 = { nounwind readnone }
 !10 = !{i32 2, !"Debug Info Version", i32 3}
 !11 = !{i32 1, !"PIC Level", i32 2}
 !12 = !{!"clang version 3.9.0 (trunk 273441) (llvm/trunk 273449)"}
-!13 = distinct !DISubprogram(name: "f", linkageName: "\01?f@@YAHPEAX@Z", scope: !1, file: !1, line: 2, type: !14, isLocal: false, isDefinition: true, scopeLine: 2, flags: DIFlagPrototyped, isOptimized: false, unit: !0, variables: !2)
+!13 = distinct !DISubprogram(name: "f", linkageName: "\01?f@@YAHPEAX@Z", scope: !1, file: !1, line: 2, type: !14, isLocal: false, isDefinition: true, scopeLine: 2, flags: DIFlagPrototyped, isOptimized: false, unit: !0, retainedNodes: !2)
 !14 = !DISubroutineType(types: !15)
 !15 = !{!8, !16}
 !16 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: null, size: 64, align: 64)

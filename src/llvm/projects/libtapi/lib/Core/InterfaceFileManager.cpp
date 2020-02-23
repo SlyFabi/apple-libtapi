@@ -30,12 +30,12 @@ InterfaceFileManager::InterfaceFileManager(FileManager &fm) : _fm(fm) {
 
 Expected<InterfaceFileBase *>
 InterfaceFileManager::readFile(const std::string &path) {
-  auto *file = _fm.getFile(path);
-  if (file == nullptr)
+  llvm::ErrorOr<const FileEntry *> file = _fm.getFile(path);
+  if (file.getError())
     return errorCodeToError(
         std::make_error_code(std::errc::no_such_file_or_directory));
 
-  auto bufferOrErr = _fm.getBufferForFile(file);
+  auto bufferOrErr = _fm.getBufferForFile(file.get());
   if (!bufferOrErr)
     return errorCodeToError(bufferOrErr.getError());
 

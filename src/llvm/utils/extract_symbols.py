@@ -42,13 +42,13 @@ def dumpbin_get_symbols(lib):
     process.wait()
 
 def nm_get_symbols(lib):
-    process = subprocess.Popen(['nm',lib], bufsize=1,
+    process = subprocess.Popen(['nm','-P',lib], bufsize=1,
                                stdout=subprocess.PIPE, stdin=subprocess.PIPE,
                                universal_newlines=True)
     process.stdin.close()
     for line in process.stdout:
         # Look for external symbols that are defined in some section
-        match = re.match("^\S+\s+[BDGRSTVW]\s+(\S+)$", line)
+        match = re.match("^(\S+)\s+[BDGRSTVW]\s+\S+\s+\S+$", line)
         if match:
             yield match.group(1)
     process.wait()
@@ -380,7 +380,7 @@ if __name__ == '__main__':
         print("Couldn't find a program to read symbols with", file=sys.stderr)
         exit(1)
     if not is_32bit_windows:
-        print("Couldn't find a program to determing the target", file=sys.stderr)
+        print("Couldn't find a program to determining the target", file=sys.stderr)
         exit(1)
 
     # How we determine which symbols to keep and which to discard depends on
